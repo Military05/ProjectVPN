@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>VLESS ShopBot Admin</title>
+    <link rel="stylesheet" href="/admin-ui/assets/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Перейти к содержимому</a>
+    <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+    <div id="modal-root" class="modal-root"></div>
+
+    <main id="login-view" class="auth-page" aria-labelledby="login-title">
+      <section class="auth-card" role="form" aria-describedby="login-help">
+        <div class="brand-mark" aria-hidden="true">VS</div>
+        <p class="eyebrow">Панель управления VPN-сервисом</p>
+        <h1 id="login-title">VLESS ShopBot Admin</h1>
+        <p id="login-help" class="muted">
+          Введите административный токен. Он не отправляется никуда, кроме запросов к вашему API,
+          и хранится только в текущем браузере.
+        </p>
+        <form id="login-form" class="stack-lg" novalidate>
+          <label class="field">
+            <span class="field-label">Admin API token</span>
+            <input
+              id="admin-token"
+              name="admin-token"
+              class="input"
+              autocomplete="current-password"
+              placeholder="X-Admin-Token"
+              required
+              type="password"
+            />
+            <span class="field-help">Значение переменной ADMIN_API_TOKEN из .env.</span>
+          </label>
+          <button class="btn btn-primary btn-block" type="submit">
+            Открыть панель
+          </button>
+        </form>
+        <div class="auth-footer">
+          <span class="status-dot status-neutral" aria-hidden="true"></span>
+          <span>API shell: <code>/admin-ui</code></span>
+        </div>
+      </section>
+    </main>
+
+    <div id="app-shell" class="app-shell is-hidden">
+      <aside id="sidebar" class="sidebar" aria-label="Главная навигация">
+        <div class="sidebar-brand">
+          <div class="brand-mark" aria-hidden="true">VS</div>
+          <div>
+            <strong>VLESS ShopBot</strong>
+            <span>Admin Console</span>
+          </div>
+        </div>
+        <nav id="sidebar-nav" class="sidebar-nav"></nav>
+        <div class="sidebar-card">
+          <span class="status-dot status-info" aria-hidden="true"></span>
+          <div>
+            <strong>Multinode ready</strong>
+            <p>Узлы, тарифы и платежи собраны в одной панели.</p>
+          </div>
+        </div>
+      </aside>
+
+      <div class="app-main">
+        <header class="topbar">
+          <button id="mobile-menu-button" class="icon-button mobile-only" type="button" aria-label="Открыть меню">
+            ☰
+          </button>
+          <div>
+            <p id="page-kicker" class="eyebrow">Администрирование</p>
+            <h1 id="page-title">Dashboard</h1>
+          </div>
+          <div class="topbar-actions">
+            <button id="refresh-button" class="btn btn-secondary" type="button">Обновить</button>
+            <button id="logout-button" class="btn btn-ghost" type="button">Выйти</button>
+          </div>
+        </header>
+
+        <div id="mobile-backdrop" class="mobile-backdrop" hidden></div>
+        <section id="main-content" class="page-container" tabindex="-1"></section>
+      </div>
+    </div>
+
+    <noscript>
+      <div class="noscript-alert">Для работы админ-панели нужен включенный JavaScript.</div>
+    </noscript>
+    <script src="/admin-ui/assets/app.js" defer></script>
+  </body>
+</html>

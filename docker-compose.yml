@@ -1,0 +1,121 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: shopbot
+      POSTGRES_USER: shopbot
+      POSTGRES_PASSWORD: shopbot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopbot -d shopbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVICE_MODE: api
+      HOST: 0.0.0.0
+      PORT: 8080
+      AUTO_SEED_DEMO_DATA: "true"
+      DEMO_NODE_AUTO_REGISTER: "true"
+    command: ["sh", "-c", "alembic upgrade head && python -m shop_bot"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      node-agent:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+      - ./alembic.ini:/app/alembic.ini
+
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVICE_MODE: worker
+    command: ["python", "-m", "shop_bot"]
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      node-agent:
+        condition: service_started
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVICE_MODE: bot
+    command: ["python", "-m", "shop_bot"]
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  node-agent:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVICE_MODE: node_agent
+      HOST: 0.0.0.0
+      PORT: 8090
+      NODE_AGENT_NODE_KEY: ${DEMO_NODE_KEY:-demo-node}
+      NODE_AGENT_DISPLAY_NAME: ${DEMO_NODE_DISPLAY_NAME:-Demo node}
+      NODE_AGENT_KEY_ID: ${DEMO_NODE_KEY_ID:-default}
+      NODE_AGENT_SHARED_SECRET: ${DEMO_NODE_SHARED_SECRET:-change-me-node-secret}
+      NODE_AGENT_RUNTIME_MODE: ${NODE_AGENT_RUNTIME_MODE:-stub}
+    command: ["python", "-m", "shop_bot"]
+    ports:
+      - "8090:8090"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  postgres_data:

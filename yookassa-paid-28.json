@@ -1,0 +1,17 @@
+﻿{
+  "type": "notification",
+  "event": "payment.succeeded",
+  "object": {
+    "id": "318c7560-000f-5000-b000-11c68457538f",
+    "status": "succeeded",
+    "paid": true,
+    "amount": {
+      "value": "1.00",
+      "currency": "RUB"
+    },
+    "metadata": {
+      "provider": "yookassa",
+      "payment_order_id": "28"
+    }
+  }
+}

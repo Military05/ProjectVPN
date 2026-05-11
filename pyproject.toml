@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vless-shopbot"
+version = "3.0.0"
+description = "Modular monolith for selling VLESS subscriptions through Telegram"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "OpenAI Technical Executor" }
+]
+dependencies = [
+  "aiogram>=3.22.0,<4.0.0",
+  "alembic>=1.14.0,<2.0.0",
+  "arq>=0.26.3,<1.0.0",
+  "asyncpg>=0.30.0,<1.0.0",
+  "fastapi>=0.111.0,<1.0.0",
+  "httpx>=0.28.0,<1.0.0",
+  "orjson>=3.10.0,<4.0.0",
+  "prometheus-fastapi-instrumentator>=7.1.0,<8.0.0",
+  "pydantic>=2.11.0,<3.0.0",
+  "pydantic-settings>=2.8.0,<3.0.0",
+  "python-multipart>=0.0.20,<1.0.0",
+  "redis[hiredis]>=5.2.1,<6.0.0",
+  "sentry-sdk[fastapi]>=2.24.0,<3.0.0",
+  "SQLAlchemy>=2.0.37,<2.1.0",
+  "structlog>=25.1.0,<26.0.0",
+  "tenacity>=9.0.0,<10.0.0",
+  "uvicorn[standard]>=0.30.0,<1.0.0",
+  "opentelemetry-api>=1.33.0,<2.0.0",
+  "opentelemetry-sdk>=1.33.0,<2.0.0",
+  "opentelemetry-exporter-otlp>=1.33.0,<2.0.0",
+  "opentelemetry-instrumentation-fastapi>=0.54b0,<1.0.0",
+  "opentelemetry-instrumentation-logging>=0.54b0,<1.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9.0.0",
+  "pytest-asyncio>=0.24.0,<1.0.0",
+  "testcontainers[postgres,redis]>=4.8.2,<5.0.0"
+]
+
+[project.scripts]
+shopbot-api = "shop_bot.apps.api.__main__:main"
+shopbot-bot = "shop_bot.apps.bot.__main__:main"
+shopbot-worker = "shop_bot.apps.worker.__main__:main"
+shopbot-node-agent = "shop_bot.apps.node_agent.__main__:main"
+shopbot-seed = "shop_bot.bootstrap.seed_demo:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.setuptools.package-data]
+shop_bot = [
+  "apps/api/static/admin/*.html",
+  "apps/api/static/admin/assets/*.css",
+  "apps/api/static/admin/assets/*.js"
+]

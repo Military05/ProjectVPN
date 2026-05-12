@@ -1,0 +1,174 @@
+﻿WORKFLOW — правила работы с проектом SoterVPN
+
+ AI  ТЬ Т:
+
+сли проект загружен в новый чат, сначала прочитать:
+
+docs/AI_PROJECT_CONTEXT.txt
+docs/WORKFLOW.txt
+
+отом посмотреть структуру проекта.
+
+WINDOWS PROJECT PATH:
+
+C:\Users\Admin\Desktop\vless-shopbot-reworked-git
+
+ерейти в проект:
+cd "C:\Users\Admin\Desktop\vless-shopbot-reworked-git"
+
+ткрыть файл на Windows:
+notepad "C:\Users\Admin\Desktop\vless-shopbot-reworked-git\PATH\TO\FILE"
+
+VPS SUBSCRIPTION PATH:
+
+/opt/sotervpn-sub
+
+ткрыть файл на VPS:
+nano /opt/sotervpn-sub/main.py
+nano /opt/sotervpn-sub/models.py
+nano /opt/sotervpn-sub/.env
+
+С ЬТЬ СТ INSERT:
+
+1. ткрыть файл:
+nano /opt/sotervpn-sub/models.py
+
+2. чистить старое содержимое:
+Ctrl + K
+повторять, пока файл не станет пустым.
+
+3. ажать:
+Insert
+
+4. ставить полный файл.
+
+5. Сохранить:
+Ctrl + O
+Enter
+Ctrl + X
+
+  ТЯ:
+
+е давать фрагменты файла.
+сегда давать полный файл целиком для замены.
+
+ля любой правки файла давать:
+
+1. команду открытия файла;
+2. полный файл;
+3. команду проверки;
+4. команду перезапуска;
+5. команду проверки результата.
+
+ SUBSCRIPTION API:
+
+curl https://sub.sotervpn.ru/channels
+curl -I https://sub.sotervpn.ru/sub/soter
+curl https://sub.sotervpn.ru/sub/soter/raw
+
+С SUBSCRIPTION API:
+
+systemctl restart sotervpn-sub
+systemctl status sotervpn-sub
+
+ыйти из status:
+q
+
+ SUBSCRIPTION API:
+
+journalctl -u sotervpn-sub -n 100 --no-pager
+
+ NGINX:
+
+nginx -t
+systemctl status nginx
+
+С NGINX:
+
+systemctl restart nginx
+
+С Ш 502:
+
+502 означает:
+Nginx работает, но backend на 8080 не отвечает.
+
+роверять:
+
+systemctl status sotervpn-sub
+journalctl -u sotervpn-sub -n 100 --no-pager
+curl http://127.0.0.1:8080/channels
+ss -tulnp | grep 8080
+
+DOCKER WORKFLOW  WINDOWS:
+
+cd "C:\Users\Admin\Desktop\vless-shopbot-reworked-git"
+docker compose down
+docker compose build --no-cache
+docker compose up
+
+оги:
+
+docker compose logs --tail=120 bot
+docker compose logs --tail=120 api
+docker compose logs --tail=120 worker
+
+сли Docker падает на ModuleNotFoundError, не гадать.
+Смотреть точный модуль и добавлять зависимость в requirements.txt.
+
+GIT WORKFLOW:
+
+роверить статус:
+git status
+
+обавить файлы:
+git add .
+
+оммит:
+git commit -m "Update project documentation"
+
+уш:
+git push
+
+сли Git ещё не инициализирован:
+git init
+
+сли нужно подключить GitHub:
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/sotervpn-shopbot.git
+git push -u origin main
+
+Т  ТТЬ:
+
+.env
+.env.local
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pem
+*.key
+*.crt
+*.sqlite
+*.db
+logs/
+node_modules/
+
+Т  ТТЬ:
+
+README.md
+docs/
+.env.example
+Dockerfile
+docker-compose.yml
+requirements.txt
+backend/
+frontend/
+src/
+
+ Я  Т GPT:
+
+ользователь может написать:
+
+Я загрузил архив проекта. Сначала прочитай docs/AI_PROJECT_CONTEXT.txt и docs/WORKFLOW.txt. отом работай по этим правилам: при изменении файлов всегда давай команду открытия файла и полный файл для замены.
+
+AI должен следовать этим файлам и не переспрашивать уже описанные детали проекта.

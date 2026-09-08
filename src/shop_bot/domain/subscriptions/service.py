@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from shop_bot.domain.entities.subscription import Subscription, SubscriptionPeriod
+from shop_bot.domain.services.subscription_policy import SubscriptionPolicy
+
 
 @dataclass(slots=True)
 class SubscriptionActivationResult:
@@ -15,6 +18,15 @@ class SubscriptionActivationResult:
 
 
 class SubscriptionService:
+    """Compatibility facade over the rich-domain SubscriptionPolicy.
+
+    New application code uses ActivateSubscription. This facade preserves the
+    public API used by older extensions and tests without duplicating rules.
+    """
+
+    def __init__(self, policy: SubscriptionPolicy | None = None) -> None:
+        self._policy = policy or SubscriptionPolicy()
+
     async def apply_paid_period(
         self,
         *,
@@ -24,50 +36,75 @@ class SubscriptionService:
         period_days: int,
         now: datetime,
     ) -> SubscriptionActivationResult:
-        active_subscription = await subscription_repo.lock_active_subscription_for_user(user_id)
-        created_new_subscription = False
+        active_row = await subscription_repo.lock_active_subscription_for_user(user_id)
+        active = self._subscription_from_legacy_row(active_row, now) if active_row is not None else None
+        last_row = None
+        if active is not None and active.tariff_id == tariff_id and active.id is not None:
+            last_row = await subscription_repo.lock_last_period(active.id)
+        last_period = self._period_from_legacy_row(last_row, active.id if active else None, now)
 
-        if active_subscription is None:
-            subscription_id = await subscription_repo.create_subscription(
-                user_id=user_id,
-                tariff_id=tariff_id,
-                status="active",
-                created_at=now,
+        activation = self._policy.apply_paid_period(
+            active_subscription=active,
+            last_period=last_period,
+            user_id=user_id,
+            tariff_id=tariff_id,
+            period_days=period_days,
+            now=now,
+        )
+        if activation.replaced_subscription is not None and activation.replaced_subscription.id is not None:
+            await subscription_repo.end_subscription(
+                activation.replaced_subscription.id,
+                ended_at=activation.replaced_subscription.ended_at,
+                status=str(activation.replaced_subscription.status),
             )
-            starts_at = now
-            created_new_subscription = True
+        if activation.created_new_subscription:
+            subscription_id = await subscription_repo.create_subscription(
+                user_id=activation.subscription.user_id,
+                tariff_id=activation.subscription.tariff_id,
+                status=str(activation.subscription.status),
+                created_at=activation.subscription.created_at,
+            )
         else:
-            subscription_id = int(active_subscription["subscription_id"])
-            active_tariff_id = int(active_subscription["tariff_id"])
-            if active_tariff_id != tariff_id:
-                await subscription_repo.end_subscription(subscription_id, ended_at=now, status="ended")
-                subscription_id = await subscription_repo.create_subscription(
-                    user_id=user_id,
-                    tariff_id=tariff_id,
-                    status="active",
-                    created_at=now,
-                )
-                starts_at = now
-                created_new_subscription = True
-            else:
-                last_period = await subscription_repo.lock_last_period(subscription_id)
-                if last_period is None:
-                    starts_at = now
-                else:
-                    starts_at = max(now, last_period["expires_at"])
+            if activation.subscription.id is None:
+                raise RuntimeError("Existing subscription has no id")
+            subscription_id = activation.subscription.id
 
-        expires_at = starts_at + timedelta(days=period_days)
-        subscription_period_id = await subscription_repo.create_period(
+        period_id = await subscription_repo.create_period(
             subscription_id=subscription_id,
-            starts_at=starts_at,
-            expires_at=expires_at,
-            is_paid=True,
-            created_at=now,
+            starts_at=activation.period.starts_at,
+            expires_at=activation.period.expires_at,
+            is_paid=activation.period.is_paid,
+            created_at=activation.period.created_at,
         )
         return SubscriptionActivationResult(
             subscription_id=subscription_id,
-            subscription_period_id=subscription_period_id,
-            starts_at=starts_at,
+            subscription_period_id=period_id,
+            starts_at=activation.period.starts_at,
+            expires_at=activation.period.expires_at,
+            created_new_subscription=activation.created_new_subscription,
+        )
+
+    @staticmethod
+    def _subscription_from_legacy_row(row: Any, now: datetime) -> Subscription:
+        return Subscription(
+            id=int(row["subscription_id"]),
+            user_id=int(row.get("user_id", 1)),
+            tariff_id=int(row["tariff_id"]),
+            status=str(row.get("status", "active")),
+            created_at=row.get("created_at", now),
+            ended_at=row.get("ended_at"),
+        )
+
+    @staticmethod
+    def _period_from_legacy_row(row: Any, subscription_id: int | None, now: datetime) -> SubscriptionPeriod | None:
+        if row is None:
+            return None
+        expires_at = row["expires_at"]
+        return SubscriptionPeriod(
+            id=int(row["subscription_period_id"]) if row.get("subscription_period_id") is not None else None,
+            subscription_id=subscription_id,
+            starts_at=row.get("starts_at", expires_at - timedelta(seconds=1)),
             expires_at=expires_at,
-            created_new_subscription=created_new_subscription,
+            is_paid=bool(row.get("is_paid", True)),
+            created_at=row.get("created_at", now),
         )

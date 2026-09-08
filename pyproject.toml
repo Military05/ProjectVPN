@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -40,7 +40,8 @@ dependencies = [
 dev = [
   "pytest>=8.3.0,<9.0.0",
   "pytest-asyncio>=0.24.0,<1.0.0",
-  "testcontainers[postgres,redis]>=4.8.2,<5.0.0"
+  "testcontainers[postgres,redis]>=4.8.2,<5.0.0",
+  "pip-tools==7.5.1"
 ]
 
 [project.scripts]
@@ -67,5 +68,7 @@ line-length = 100
 shop_bot = [
   "apps/api/static/admin/*.html",
   "apps/api/static/admin/assets/*.css",
-  "apps/api/static/admin/assets/*.js"
+  "apps/api/static/admin/assets/*.js",
+  "apps/bot/assets/*.jpg",
+  "apps/bot/assets/*.png"
 ]

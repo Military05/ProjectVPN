@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from html import escape
 
 from fastapi import APIRouter, Depends, Form, HTTPException, status
@@ -100,11 +101,7 @@ async def dummy_payment_page(
     payment_order_id: int,
     container: ServiceContainer = Depends(get_container),
 ) -> HTMLResponse:
-    async with container.uow() as uow:
-        order = await uow.payments.get_order(payment_order_id)
-        attempt = await uow.payments.get_latest_attempt(payment_order_id)
-    if order is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    order, attempt = await container.applications.admin.get_payment_with_attempt(payment_order_id)
     if order["provider"] != "dummy":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -138,29 +135,29 @@ async def pay_dummy_order(
     provider_payment_id: str = Form(default=""),
     container: ServiceContainer = Depends(get_container),
 ) -> HTMLResponse:
-    async with container.uow() as uow:
-        order = await uow.payments.get_order(payment_order_id)
-        if order is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-        if order["provider"] != "dummy":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Sandbox is only available for dummy provider",
-            )
-        attempt = await uow.payments.get_latest_attempt(payment_order_id)
+    order, attempt = await container.applications.admin.get_payment_with_attempt(payment_order_id)
+    if order["provider"] != "dummy":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Sandbox is only available for dummy provider",
+        )
     provider_payment_id = provider_payment_id or (
         attempt["provider_payment_id"] if attempt is not None else ""
     )
-    await ingest_webhook_event(
-        container,
-        provider="dummy",
-        payload={
+    raw_body = json.dumps(
+        {
             "payment_order_id": payment_order_id,
             "provider_payment_id": provider_payment_id,
             "status": "paid",
             "amount_minor": int(order["amount_minor"]),
             "currency": str(order["currency"]),
         },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    await ingest_webhook_event(
+        container,
+        provider="dummy",
+        raw_body=raw_body,
         headers={},
     )
     body = """

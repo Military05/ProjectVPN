@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import httpx
 
 from shop_bot.core.config import Settings
@@ -9,7 +7,7 @@ from shop_bot.schemas.bot import BotCreateOrderResponse, BotDashboardResponse, B
 
 
 class BackendApiClient:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client = httpx.AsyncClient(
             base_url=str(settings.backend_base_url).rstrip("/"),

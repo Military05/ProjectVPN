@@ -24,7 +24,7 @@ class VerifiedNodeRequest:
 
 
 class InMemoryNonceStore:
-    def __init__(self, ttl_seconds: int):
+    def __init__(self, ttl_seconds: int) -> None:
         self._ttl = ttl_seconds
         self._entries: dict[str, datetime] = {}
 
@@ -159,12 +159,15 @@ def verify_signed_request(
         timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
     except ValueError as exc:
         raise NodeAuthError("Invalid timestamp") from exc
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise NodeAuthError("Timestamp must include timezone")
+    timestamp = timestamp.astimezone(UTC)
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        current_time = current_time.replace(tzinfo=UTC)
+    else:
+        current_time = current_time.astimezone(UTC)
     if abs((current_time - timestamp).total_seconds()) > tolerance_seconds:
         raise NodeAuthError("Timestamp outside allowed skew")
-
-    nonce_key = f"{node_id}:{nonce}"
-    if not nonce_store.remember(nonce_key, now=current_time):
-        raise NodeAuthError("Replay detected")
 
     canonical = canonical_string(
         method=method,
@@ -177,6 +180,10 @@ def verify_signed_request(
     expected_signature = compute_signature(secret=shared_secret, canonical=canonical)
     if not hmac.compare_digest(supplied_signature, expected_signature):
         raise NodeAuthError("Invalid signature")
+
+    nonce_key = f"{node_id}:{nonce}"
+    if not nonce_store.remember(nonce_key, now=current_time):
+        raise NodeAuthError("Replay detected")
 
     return VerifiedNodeRequest(
         node_id=node_id,

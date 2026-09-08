@@ -1,0 +1,13 @@
+{
+  "id": "2f3f7d9a-000f-5000-9000-1d6f5e8a2c10",
+  "status": "pending",
+  "paid": false,
+  "amount": {"value": "99.00", "currency": "RUB"},
+  "confirmation": {
+    "type": "redirect",
+    "confirmation_url": "https://yoomoney.ru/checkout/payments/v2/contract?orderId=2f3f7d9a"
+  },
+  "created_at": "2026-08-19T09:30:00.000Z",
+  "description": "Subscription order 22",
+  "metadata": {"payment_order_id": 22, "provider": "yookassa"}
+}

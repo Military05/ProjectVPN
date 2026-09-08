@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from shop_bot.domain.errors import DomainValidationError
+from shop_bot.domain.vpn.validation import validate_vless_endpoint
 
 
 class CreateTariffRequest(BaseModel):
-    tariff_name: str = Field(min_length=1)
-    price_minor: int = Field(gt=0)
-    currency: str = Field(default="RUB", min_length=1)
-    period_days: int = Field(gt=0)
-    description: str | None = None
-    is_enabled: bool = True
-
-
-class UpdateTariffRequest(BaseModel):
     tariff_name: str = Field(min_length=1)
     price_minor: int = Field(gt=0)
     currency: str = Field(default="RUB", min_length=1)
@@ -42,3 +36,22 @@ class CreateServerEndpointRequest(BaseModel):
     flow: str | None = None
     encryption: str | None = None
     is_enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_endpoint(self) -> "CreateServerEndpointRequest":
+        self.protocol = self.protocol.strip().lower()
+        self.security = self.security.strip().lower() if self.security else self.security
+        self.flow = self.flow.strip().lower() if self.flow else self.flow
+        try:
+            validate_vless_endpoint(
+                protocol=self.protocol,
+                security=self.security,
+                sni=self.sni,
+                fingerprint=self.fingerprint,
+                public_key=self.public_key,
+                short_id=self.short_id,
+                flow=self.flow,
+            )
+        except DomainValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        return self

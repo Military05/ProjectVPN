@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from shop_bot.core.config import Settings
 from shop_bot.infrastructure.payments.dummy import DummyPaymentAdapter
 
@@ -17,18 +21,20 @@ async def test_dummy_payment_adapter_creates_payment_url() -> None:
     assert intent.provider_payment_id.startswith("dummy-42-")
 
 
-def test_dummy_payment_adapter_normalizes_webhook() -> None:
+@pytest.mark.asyncio
+async def test_dummy_payment_adapter_normalizes_webhook() -> None:
     settings = Settings(dummy_payment_base_url="http://localhost:8080")
     adapter = DummyPaymentAdapter(settings)
 
-    event = adapter.normalize_webhook(
-        payload={
-            "payment_order_id": 42,
-            "provider_payment_id": "dummy-42-test",
-            "status": "paid",
-            "amount_minor": 9900,
-            "currency": "RUB",
-        },
+    payload = {
+        "payment_order_id": 42,
+        "provider_payment_id": "dummy-42-test",
+        "status": "paid",
+        "amount_minor": 9900,
+        "currency": "RUB",
+    }
+    event = await adapter.verify_and_normalize_webhook(
+        raw_body=json.dumps(payload).encode(),
         headers={},
     )
 

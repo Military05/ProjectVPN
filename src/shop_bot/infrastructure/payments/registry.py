@@ -10,14 +10,19 @@ from shop_bot.infrastructure.payments.yookassa import YooKassaAdapter
 
 
 class PaymentAdapterRegistry:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings) -> None:
         self._adapters: dict[str, PaymentAdapter] = {
-            "dummy": DummyPaymentAdapter(settings),
             "yookassa": YooKassaAdapter(settings),
-            "cryptobot": CryptoBotAdapter(settings),
-            "heleket": HeleketAdapter(settings),
-            "ton": TonAdapter(settings),
         }
+        if not settings.is_production:
+            self._adapters.update(
+                {
+                    "dummy": DummyPaymentAdapter(settings),
+                    "cryptobot": CryptoBotAdapter(settings),
+                    "heleket": HeleketAdapter(settings),
+                    "ton": TonAdapter(settings),
+                }
+            )
 
     def get(self, provider: str) -> PaymentAdapter:
         try:

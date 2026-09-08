@@ -14,7 +14,7 @@ class PreparedVpnConfiguration:
 
 
 class VpnService:
-    def __init__(self, builder: VlessUriBuilder):
+    def __init__(self, builder: VlessUriBuilder) -> None:
         self.builder = builder
 
     def prepare_configuration(

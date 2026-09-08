@@ -77,9 +77,9 @@ class AgentCapabilitiesResponse(BaseModel):
 
 
 class AgentLoadPayload(BaseModel):
-    cpu_percent: float = 0.0
-    memory_percent: float = 0.0
-    disk_percent: float = 0.0
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    disk_percent: float | None = None
 
 
 class AgentTrafficPayload(BaseModel):
@@ -110,6 +110,15 @@ class AgentStatusResponse(BaseModel):
     load: AgentLoadPayload
     traffic: AgentTrafficPayload
     inbounds: list[AgentInboundStatus]
+
+
+class AgentSnapshotResponse(BaseModel):
+    health: AgentHealthResponse
+    capabilities: AgentCapabilitiesResponse
+    status: AgentStatusResponse
+    agent_version: str
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    inbounds: list[AgentInboundStatus] = Field(default_factory=list)
 
 
 class AgentProvisionRequest(BaseModel):

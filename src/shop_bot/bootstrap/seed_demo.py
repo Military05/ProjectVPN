@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import asyncio
 
-import structlog
+import logging
 from sqlalchemy import select
 
-from shop_bot.core.config import get_settings
-from shop_bot.infrastructure.db.engine import create_engine
-from shop_bot.infrastructure.db.tables import node_credentials, nodes, server_endpoints, servers, tariff_specs, tariffs
+from shop_bot.core.config import Settings, get_settings
+from shop_bot.infrastructure.persistence.sqlalchemy.engine import create_engine
+from shop_bot.infrastructure.persistence.sqlalchemy.tables import node_credentials, nodes, server_endpoints, servers, tariff_specs, tariffs
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-async def seed_demo_data() -> None:
-    settings = get_settings()
+async def seed_demo_data(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
+    if settings.is_production:
+        raise RuntimeError("Demo seeding is disabled in production")
     engine = create_engine(settings)
     async with engine.begin() as conn:
         tariff_exists = await conn.scalar(select(tariffs.c.tariff_id).limit(1))
@@ -32,7 +34,7 @@ async def seed_demo_data() -> None:
                     is_enabled=True,
                 )
             )
-            logger.info("seeded_demo_tariff", tariff_id=tariff_id)
+            logger.info("seeded_demo_tariff tariff_id=%s", tariff_id)
 
         demo_node_id = None
         if settings.demo_node_auto_register:
@@ -59,7 +61,7 @@ async def seed_demo_data() -> None:
                         is_active=True,
                     )
                 )
-                logger.info("seeded_demo_node", node_id=demo_node_id)
+                logger.info("seeded_demo_node node_id=%s", demo_node_id)
             else:
                 demo_node_id = int(node_row["node_id"])
 
@@ -93,7 +95,7 @@ async def seed_demo_data() -> None:
                     is_enabled=True,
                 )
             )
-            logger.info("seeded_demo_server", server_id=server_id, node_id=demo_node_id)
+            logger.info("seeded_demo_server server_id=%s node_id=%s", server_id, demo_node_id)
     await engine.dispose()
 
 

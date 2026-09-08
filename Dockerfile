@@ -1,32 +1,16 @@
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:646fb0bca3dd3ea1bcc6feb72c17ed16eed6e10cffc732fcc1478bd3e7f02d7b
+
+ENV PYTHONDONTWRITEBYTECODE=1     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONPATH=/app/src:/app
+RUN apt-get update     && apt-get install -y --no-install-recommends build-essential curl     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY alembic.ini ./
+COPY alembic ./alembic
 
-RUN pip install --no-cache-dir -r requirements.txt
-
-RUN pip install --no-cache-dir \
-    opentelemetry-instrumentation-logging \
-    opentelemetry-instrumentation-fastapi \
-    opentelemetry-instrumentation-asgi \
-    opentelemetry-instrumentation-httpx \
-    opentelemetry-instrumentation-redis \
-    opentelemetry-instrumentation-sqlalchemy \
-    opentelemetry-exporter-otlp \
-    opentelemetry-sdk \
-    sentry-sdk \
-    arq \
-    asyncpg \
-    greenlet
-
-COPY backend backend
-COPY frontend frontend
-COPY src src
-COPY alembic.ini alembic.ini
+RUN python -m pip install --no-cache-dir --upgrade pip     && python -m pip install --no-cache-dir .
 
 CMD ["python", "-m", "shop_bot"]

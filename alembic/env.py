@@ -8,7 +8,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from shop_bot.core.config import get_settings
-from shop_bot.infrastructure.db.tables import metadata
+from shop_bot.infrastructure.persistence.sqlalchemy.tables import metadata
 
 config = context.config
 settings = get_settings()

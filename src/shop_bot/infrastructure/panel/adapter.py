@@ -3,17 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import httpx
-
 from shop_bot.core.config import Settings
+from shop_bot.infrastructure.xui import XuiClient, inbound_numeric_id
 
 
 class PanelAdapter(Protocol):
-    async def provision(self, payload: dict[str, Any]) -> None:
-        ...
-
-    async def revoke(self, payload: dict[str, Any]) -> None:
-        ...
+    async def provision(self, payload: dict[str, Any]) -> None: ...
+    async def revoke(self, payload: dict[str, Any]) -> None: ...
 
 
 @dataclass(slots=True)
@@ -30,48 +26,24 @@ class XuiPanelAdapter:
     settings: Settings
 
     async def provision(self, payload: dict[str, Any]) -> None:
-        if not self.settings.xui_base_url or not self.settings.xui_username or not self.settings.xui_password:
-            raise RuntimeError("XUI credentials are not configured")
-        async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
-            login_response = await client.post(
-                f"{self.settings.xui_base_url.rstrip('/')}/login",
-                data={"username": self.settings.xui_username, "password": self.settings.xui_password},
-            )
-            login_response.raise_for_status()
-            response = await client.post(
-                f"{self.settings.xui_base_url.rstrip('/')}/panel/api/inbounds/addClient",
-                json={
-                    "id": payload["xui_inbound_id"],
-                    "settings": {
-                        "clients": [
-                            {
-                                "id": payload["client_uuid"],
-                                "email": payload["display_name"],
-                                "flow": payload.get("flow"),
-                            }
-                        ]
-                    },
-                },
-            )
-            response.raise_for_status()
+        client = XuiClient(self.settings)
+        await client.add_client(
+            inbound_id=inbound_numeric_id(payload["xui_inbound_id"]),
+            client_uuid=str(payload["client_uuid"]),
+            email=str(payload["display_name"]),
+            flow=payload.get("flow"),
+            expires_at=payload.get("expires_at"),
+        )
 
     async def revoke(self, payload: dict[str, Any]) -> None:
-        if not self.settings.xui_base_url or not self.settings.xui_username or not self.settings.xui_password:
-            raise RuntimeError("XUI credentials are not configured")
-        async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
-            login_response = await client.post(
-                f"{self.settings.xui_base_url.rstrip('/')}/login",
-                data={"username": self.settings.xui_username, "password": self.settings.xui_password},
-            )
-            login_response.raise_for_status()
-            response = await client.post(
-                f"{self.settings.xui_base_url.rstrip('/')}/panel/api/inbounds/delClient/{payload['client_uuid']}",
-                json={"id": payload["xui_inbound_id"]},
-            )
-            response.raise_for_status()
+        client = XuiClient(self.settings)
+        deleted = await client.delete_client(
+            inbound_id=inbound_numeric_id(payload["xui_inbound_id"]),
+            client_uuid=str(payload["client_uuid"]),
+        )
+        if not deleted:
+            raise RuntimeError("XUI client deletion could not be verified")
 
 
 def build_panel_adapter(settings: Settings) -> PanelAdapter:
-    if settings.panel_mode == "xui":
-        return XuiPanelAdapter(settings=settings)
-    return StubPanelAdapter()
+    return XuiPanelAdapter(settings=settings) if settings.panel_mode == "xui" else StubPanelAdapter()

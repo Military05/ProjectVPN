@@ -1,0 +1,8 @@
+{
+  "id": "2f3f7d9a-000f-5000-9000-1d6f5e8a2c10",
+  "status": "succeeded",
+  "paid": true,
+  "amount": {"value": "98.99", "currency": "RUB"},
+  "captured_at": "2026-08-19T09:31:12.123Z",
+  "metadata": {"payment_order_id": 22, "provider": "yookassa"}
+}

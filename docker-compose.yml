@@ -1,25 +1,21 @@
-version: "3.9"
-
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     restart: unless-stopped
     environment:
-      POSTGRES_DB: shopbot
-      POSTGRES_USER: shopbot
-      POSTGRES_PASSWORD: shopbot
+      POSTGRES_DB: ${POSTGRES_DB:-shopbot}
+      POSTGRES_USER: ${POSTGRES_USER:-shopbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shopbot -d shopbot"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 20
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
@@ -27,6 +23,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  migrate:
+    build: .
+    env_file:
+      - .env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
     build: .
@@ -37,22 +43,25 @@ services:
       SERVICE_MODE: api
       HOST: 0.0.0.0
       PORT: 8080
-      AUTO_SEED_DEMO_DATA: "true"
-      DEMO_NODE_AUTO_REGISTER: "true"
-    command: ["sh", "-c", "alembic upgrade head && python -m shop_bot"]
+      AUTO_SEED_DEMO_DATA: ${AUTO_SEED_DEMO_DATA:-false}
+      DEMO_NODE_AUTO_REGISTER: ${DEMO_NODE_AUTO_REGISTER:-false}
+    command: ["python", "-m", "shop_bot"]
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       node-agent:
         condition: service_started
     ports:
       - "8080:8080"
-    volumes:
-      - ./backend:/app/backend
-      - ./frontend:/app/frontend
-      - ./alembic.ini:/app/alembic.ini
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   worker:
     build: .
@@ -63,8 +72,8 @@ services:
       SERVICE_MODE: worker
     command: ["python", "-m", "shop_bot"]
     depends_on:
-      api:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       postgres:
@@ -82,7 +91,7 @@ services:
     command: ["python", "-m", "shop_bot"]
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -98,24 +107,28 @@ services:
       NODE_AGENT_NODE_KEY: ${DEMO_NODE_KEY:-demo-node}
       NODE_AGENT_DISPLAY_NAME: ${DEMO_NODE_DISPLAY_NAME:-Demo node}
       NODE_AGENT_KEY_ID: ${DEMO_NODE_KEY_ID:-default}
-      NODE_AGENT_SHARED_SECRET: ${DEMO_NODE_SHARED_SECRET:-change-me-node-secret}
+      NODE_AGENT_SHARED_SECRET: ${NODE_AGENT_SHARED_SECRET:-change-me-node-secret}
       NODE_AGENT_RUNTIME_MODE: ${NODE_AGENT_RUNTIME_MODE:-stub}
+      NODE_AGENT_IDEMPOTENCY_DB_PATH: /var/lib/shopbot-node-agent/idempotency.sqlite3
     command: ["python", "-m", "shop_bot"]
     ports:
       - "8090:8090"
+    volumes:
+      - node_agent_data:/var/lib/shopbot-node-agent
 
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
     restart: unless-stopped
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
       api:
         condition: service_started
 
 volumes:
   postgres_data:
+  node_agent_data:

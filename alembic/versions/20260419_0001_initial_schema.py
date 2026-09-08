@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from alembic import op
 
-from shop_bot.infrastructure.db.metadata_v1 import metadata
+from shop_bot.infrastructure.persistence.sqlalchemy.metadata_v1 import metadata
 
 revision = "20260419_0001"
 down_revision = None

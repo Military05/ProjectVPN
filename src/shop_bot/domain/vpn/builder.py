@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlencode
+import ipaddress
+from urllib.parse import quote, urlencode
 
 
 @dataclass(slots=True)
@@ -38,8 +39,14 @@ class VlessUriBuilder:
             "encryption": payload.encryption or "none",
         }
         query = {key: value for key, value in query.items() if value not in (None, "")}
+        host = payload.host
+        try:
+            if ipaddress.ip_address(host).version == 6:
+                host = f"[{host}]"
+        except ValueError:
+            pass
         uri = (
-            f"vless://{payload.client_uuid}@{payload.host}:{payload.port}"
-            f"?{urlencode(query)}#{payload.display_name}"
+            f"vless://{payload.client_uuid}@{host}:{payload.port}"
+            f"?{urlencode(query)}#{quote(payload.display_name, safe='')}"
         )
         return BuiltVlessConfiguration(uri=uri)

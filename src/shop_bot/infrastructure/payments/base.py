@@ -20,10 +20,10 @@ class PaymentAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def normalize_webhook(
+    async def verify_and_normalize_webhook(
         self,
         *,
-        payload: dict[str, Any],
+        raw_body: bytes,
         headers: Mapping[str, str],
     ) -> NormalizedWebhookEvent:
         raise NotImplementedError

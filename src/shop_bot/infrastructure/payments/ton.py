@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
 from uuid import uuid4
 
 from shop_bot.core.config import Settings
+from shop_bot.core.exceptions import WebhookAuthenticationError
 from shop_bot.domain.payments.models import NormalizedWebhookEvent, PaymentIntent
 from shop_bot.infrastructure.payments.base import PaymentAdapter
 
@@ -14,7 +14,7 @@ from shop_bot.infrastructure.payments.base import PaymentAdapter
 class TonAdapter(PaymentAdapter):
     provider = "ton"
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
     async def create_payment(self, *, order: Mapping[str, Any], return_url: str) -> PaymentIntent:
@@ -37,24 +37,13 @@ class TonAdapter(PaymentAdapter):
             payload={"wallet": self.settings.ton_wallet_address},
         )
 
-    def normalize_webhook(
+    async def verify_and_normalize_webhook(
         self,
         *,
-        payload: dict[str, Any],
+        raw_body: bytes,
         headers: Mapping[str, str],
     ) -> NormalizedWebhookEvent:
-        tx_hash = payload.get("tx_hash") or payload.get("transaction_hash") or uuid4().hex
-        order_id = payload.get("payment_order_id") or payload.get("order_id")
-        status = str(payload.get("status", "paid"))
-        return NormalizedWebhookEvent(
-            provider=self.provider,
-            event_key=f"ton:{tx_hash}:{status}",
-            event_type=payload.get("event_type", "ton.transaction"),
-            status=status,
-            occurred_at=datetime.now(UTC),
-            provider_payment_id=str(tx_hash),
-            payment_order_id=int(order_id) if order_id not in (None, "") else None,
-            amount_minor=int(payload.get("amount", 0)) if payload.get("amount") is not None else None,
-            currency=payload.get("currency"),
-            payload=payload,
+        del raw_body, headers
+        raise WebhookAuthenticationError(
+            "TON webhook authenticity cannot be established with the configured contract"
         )

@@ -1,156 +1,161 @@
 # vless-shopbot
 
-Reworked `evansvl/vless-shopbot` as a modular monolith with a central backend and an optional multinode control plane.
+Production-oriented modular monolith for selling VLESS VPN subscriptions through Telegram. The project contains four runtime components: FastAPI backend, aiogram bot, ARQ worker and node agent.
 
-## Services
+## Architecture
 
-- FastAPI backend API
-- aiogram Telegram bot
-- arq worker
-- PostgreSQL 15+
-- Redis
-- FastAPI node-agent
+The internal architecture is a Rich Domain Model built on Clean Architecture principles:
 
-## Layers
+```text
+apps (FastAPI / Telegram / Worker / Node Agent)
+        ↓
+application (use cases, queries, ports)
+        ↓
+domain (entities, value objects, policies, repository interfaces)
+        ↑
+infrastructure (SQLAlchemy, PostgreSQL, Redis, payments, panels, node HTTP)
+```
 
-- `apps`: API, bot, worker, node-agent entrypoints
-- `application`: commands, queries, orchestration
-- `domain`: subscription, payment, VPN business rules
-- `infrastructure`: SQLAlchemy Core repositories, Redis, payment adapters, panel adapter, node client/auth
+Dependency rules:
 
-The backend API remains the only place where domain writes happen. The bot remains a thin UX client that talks to the backend over HTTP.
+- `domain` has no dependencies on FastAPI, aiogram, SQLAlchemy, Redis or external APIs;
+- `application` depends on domain objects and interfaces only;
+- `infrastructure` implements repository and gateway interfaces;
+- `apps` are thin controllers and runtime composition roots;
+- external dependencies are injected by `bootstrap/container.py`.
 
-## What was added for multinode mode
+### Domain model
 
-- `nodes`, `node_credentials`, `node_status`, `node_tasks`, `node_task_attempts`
-- HMAC signed central -> node-agent requests with timestamp, nonce and idempotency key
-- `apps/node_agent` service with:
-  - `GET /agent/health`
-  - `GET /agent/capabilities`
-  - `GET /agent/status`
-  - `POST /agent/clients/provision`
-  - `POST /agent/clients/revoke`
-- worker orchestration for node task dispatch and status sync
-- `server_endpoints.node_id` and `server_endpoints.local_inbound_id` to map public VLESS endpoints to managed nodes and local inbounds
-- backward-compatible legacy fallback through the existing global `panel_adapter` when an endpoint is not linked to any node
+The core business objects are explicit classes with lifecycle rules:
 
-## Provisioning flow
+- `User`, `UserContact`;
+- `Tariff`, `Money`;
+- `Subscription`, `SubscriptionPeriod`;
+- `PaymentOrder`, `PaymentAttempt`, `PaymentEvent`, `PaymentTransaction`;
+- `VpnConfiguration`;
+- `Node`, `NodeTask`.
 
-Central path:
+Examples of behavior owned by entities: payment state transitions, subscription activation/extension/expiration, VPN activation/revocation and node-task retry/failure handling.
 
-1. payment webhook/event is ingested into central DB
-2. payment event processing activates subscription period only after a valid paid transition
-3. provisioning command selects an enabled endpoint
-4. if the endpoint is linked to a node, central creates `vpn_configurations` in `provisioning`, creates a `node_task`, and worker dispatches it to node-agent
-5. node-agent performs local provision via stub or XUI runtime
-6. central activates the VPN config and still builds the final VLESS URI from central DB
+### Project structure
 
-Legacy path:
+```text
+src/shop_bot/
+├── apps/                         # runtime entrypoints and controllers
+│   ├── api/
+│   ├── bot/
+│   ├── worker/
+│   └── node_agent/
+├── application/
+│   ├── use_cases/                # executable business scenarios
+│   ├── queries/                  # read services
+│   ├── ports/                    # gateway and UoW abstractions
+│   └── commands/                 # compatibility controllers
+├── domain/
+│   ├── entities/
+│   ├── value_objects/
+│   ├── services/
+│   └── repositories/             # Protocol interfaces
+├── infrastructure/
+│   ├── persistence/
+│   │   ├── sqlalchemy/           # tables, mappers, engine, UoW
+│   │   └── repositories/         # SQLAlchemy implementations
+│   ├── payments/
+│   ├── nodes/
+│   ├── panel/
+│   ├── redis/
+│   └── messaging/
+└── bootstrap/                    # dependency injection and startup wiring
+```
 
-- if `server_endpoints.node_id` is `NULL`, provisioning still falls back to the existing single-panel adapter
+The old `infrastructure/db` import paths remain as thin compatibility proxies. Database tables, Alembic revisions, HTTP URLs, request/response schemas, environment variable names and payment-provider contracts are preserved.
+
+## Main business flows
+
+### Payment and subscription
+
+1. Bot/API registers or resolves the user.
+2. `CreatePayment` creates an idempotent `PaymentOrder` and provider attempt.
+3. Webhook is normalized and stored by `IngestWebhook`.
+4. Worker runs `ProcessPayment`.
+5. `PaymentOrder.mark_paid()` validates the transition.
+6. `ActivateSubscription` applies `SubscriptionPolicy` and creates/extends a paid period.
+7. Provisioning is queued through the injected job queue.
+
+### VPN provisioning
+
+1. `ProvisionVpn` validates active subscription access.
+2. `VpnProvisioningService` creates the domain configuration.
+3. For a node-linked endpoint, a `NodeTask` is stored and dispatched.
+4. For a legacy endpoint, a durable `PanelProvisionTask` is stored before ARQ dispatch; the remote panel call happens only in its leased dispatcher.
+5. Successful remote provisioning is fenced before `VpnConfiguration.activate()`; local-finalization failures trigger compensating revoke.
+
+### Node task execution
+
+1. `DispatchNodeTask` locks the task and starts an attempt.
+2. The node gateway sends a signed request to the node agent.
+3. The domain task accepts success, schedules a bounded retry or fails.
+4. VPN state and node health are updated transactionally.
+
+## Compatibility guarantees
+
+The refactor intentionally does not change:
+
+- PostgreSQL table names or relationships;
+- Alembic revision history;
+- FastAPI and Node Agent route paths;
+- Pydantic request/response models;
+- Telegram commands and callback data;
+- payment adapter interfaces and webhook flow;
+- ARQ semantic job names (centralized in `JobName`);
+- `SERVICE_MODE` values;
+- environment variable names.
+
+## Runtime components
+
+```text
+SERVICE_MODE=api
+SERVICE_MODE=bot
+SERVICE_MODE=worker
+SERVICE_MODE=node_agent
+```
+
+Installed console scripts:
+
+```text
+shopbot-api
+shopbot-bot
+shopbot-worker
+shopbot-node-agent
+shopbot-seed
+```
+
+### Queue durability and recovery
+
+Redis/ARQ is intentionally disposable and is used only for delivery, wake-ups and cache data. PostgreSQL stores the durable payment, node and panel work intents. On startup, the worker first verifies that the schema is at the Alembic head and then performs one bounded recovery pass; minute-based recovery jobs continue repairing lost queue deliveries while the worker runs.
 
 ## Local run with Docker Compose
 
-1. Copy the environment template.
-
 ```bash
 cp .env.example .env
-```
-
-2. Fill the required values in `.env`.
-
-At minimum:
-
-- `BOT_TOKEN`
-- `INTERNAL_API_KEY`
-- `ADMIN_API_TOKEN`
-- `DEMO_NODE_SHARED_SECRET`
-
-3. Start the stack.
-
-```bash
+# Fill BOT_TOKEN, INTERNAL_API_KEY, ADMIN_API_TOKEN and payment/node secrets.
 docker compose up --build
 ```
 
-4. Open:
+Endpoints:
 
 - API docs: `http://localhost:8080/docs`
-- Node agent: `http://localhost:8090`
+- health: `http://localhost:8080/health/live`
+- admin UI: `http://localhost:8080/admin-ui`
+- node agent: `http://localhost:8090`
 - Prometheus: `http://localhost:9090`
-- Health: `http://localhost:8080/health/live`
-- Admin UI: `http://localhost:8080/admin-ui`
 
-Compose runs a demo node-agent and auto-registers a demo node for the seeded endpoint.
+## Manual run
 
-## Admin web panel
-
-The API now serves a lightweight built-in admin panel at `/admin-ui`. It uses the existing admin API endpoints and the existing `ADMIN_API_TOKEN` contract; the token is sent as `X-Admin-Token` and stored only in browser session storage. No backend route, payload, or environment variable names were changed for the panel.
-
-The panel includes dashboard metrics, clients derived from existing subscriptions/payments/VPN configs, servers, endpoints, nodes, tariffs, payments, subscriptions, VPN configurations, node tasks, system health, empty/loading/error states, and guarded destructive actions.
-
-
-## Service modes
-
-The same codebase can run as:
-
-- `SERVICE_MODE=api`
-- `SERVICE_MODE=bot`
-- `SERVICE_MODE=worker`
-- `SERVICE_MODE=node_agent`
-
-## Node admin endpoints
-
-Use header `X-Admin-Token: <ADMIN_API_TOKEN>`.
-
-- `GET /admin/nodes`
-- `POST /admin/nodes`
-- `POST /admin/nodes/{node_id}/sync`
-- `GET /admin/nodes/tasks`
-- `POST /admin/nodes/tasks/{node_task_id}/dispatch`
-
-## Existing admin endpoints
-
-- `GET /admin/tariffs`
-- `POST /admin/tariffs`
-- `GET /admin/servers`
-- `POST /admin/servers`
-- `POST /admin/server-endpoints`
-- `GET /admin/subscriptions`
-- `GET /admin/vpn-configurations`
-- `GET /admin/payment-orders`
-
-## New environment variables
-
-Central node orchestration:
-
-- `NODE_REQUEST_TIMEOUT_SECONDS`
-- `NODE_HTTP_VERIFY_TLS`
-- `NODE_TIMESTAMP_TOLERANCE_SECONDS`
-- `NODE_TASK_MAX_ATTEMPTS`
-- `NODE_TASK_RETRY_BASE_SECONDS`
-
-Node-agent runtime:
-
-- `NODE_AGENT_NODE_KEY`
-- `NODE_AGENT_KEY_ID`
-- `NODE_AGENT_SHARED_SECRET`
-- `NODE_AGENT_RUNTIME_MODE=stub|xui`
-- `NODE_AGENT_INBOUND_ID`
-- `NODE_AGENT_PUBLIC_HOST`
-- `NODE_AGENT_PUBLIC_PORT`
-
-Demo bootstrap:
-
-- `DEMO_NODE_AUTO_REGISTER`
-- `DEMO_NODE_KEY`
-- `DEMO_NODE_API_BASE_URL`
-- `DEMO_NODE_KEY_ID`
-- `DEMO_NODE_SHARED_SECRET`
-
-## Manual run without Docker
+Requires Python 3.12+, PostgreSQL and Redis.
 
 ```bash
-python -m pip install -e .[dev]
+python -m pip install -e '.[dev]'
 alembic upgrade head
 shopbot-node-agent
 shopbot-api
@@ -158,15 +163,31 @@ shopbot-worker
 shopbot-bot
 ```
 
-## Tests
+## Tests and checks
 
 ```bash
 pytest -q
-python -m compileall src tests
+python -m compileall -q src tests
+pip install --no-build-isolation --no-deps -e .
 ```
 
-## Notes
+The automated test suite covers type-annotation enforcement, domain state transitions, payment idempotency, paid subscription activation and refunds, persistence contracts, dependency boundaries, circular imports, API routes, webhook hardening, Node Agent routes, VLESS generation, node authentication, XUI integration boundaries and node runtime behavior.
 
-- the VLESS URI builder still uses central DB data from `servers`, `server_endpoints`, `vpn_configurations`
-- `servers.host` remains the public VLESS host and is not treated as the node API endpoint
-- production should use HTTPS for node-agent and can later be hardened with mTLS and secret rotation tooling
+## Required production dependency reproducibility check
+
+The functional and security fixes in this archive are implemented, but the final reproducible dependency-lock step from **P20** is intentionally not completed in this build. Before treating an image as fully reproducible for production, generate and commit a Python 3.12 `requirements.lock` containing exact transitive versions and SHA256 hashes, then validate installation and the clean container build from that lock.
+
+Recommended mandatory validation in a clean Python 3.12 environment:
+
+```bash
+python -m pip install 'pip-tools==7.5.1'
+pip-compile --generate-hashes --resolver=backtracking --output-file=requirements.lock pyproject.toml
+python -m pip install --require-hashes -r requirements.lock
+pytest -q
+python -m compileall -q src tests
+docker compose build --no-cache
+```
+
+The dependency-lock check is successful only when the lock file is generated from the intended Python 3.12 environment, every dependency hash verifies during installation, the full test suite passes, and a clean Docker/Compose build completes without resolving unpinned Python packages from the live package index. Do not report dependency reproducibility as verified until those checks have actually been executed.
+
+Detailed architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

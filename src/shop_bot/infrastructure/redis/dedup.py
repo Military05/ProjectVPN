@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from redis.asyncio import Redis
+from typing import Any
 
 
 class RedisDeduplicator:
-    def __init__(self, redis: Redis):
+    def __init__(self, redis: Any) -> None:
         self.redis = redis
 
     async def ensure_once(self, key: str, ttl_seconds: int) -> bool:

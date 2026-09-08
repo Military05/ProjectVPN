@@ -22,7 +22,7 @@ class NormalizedWebhookEvent:
     provider: str
     event_key: str
     event_type: str
-    status: PaymentStatus
+    status: PaymentStatus | None
     occurred_at: datetime
     provider_payment_id: str | None = None
     payment_order_id: int | None = None

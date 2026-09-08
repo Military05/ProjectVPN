@@ -1,7 +1,8 @@
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlparse, unquote
 
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +39,12 @@ class Settings(BaseSettings):
     yookassa_secret_key: str | None = None
     yookassa_return_url: AnyHttpUrl = "http://localhost:8080/docs"
     yookassa_webhook_secret: str | None = None
+    webhook_max_body_bytes: int = 262144
+    trusted_proxy_cidrs: list[str] = []
+    yookassa_webhook_allowed_networks: list[str] = [
+        "185.71.76.0/27", "185.71.77.0/27", "77.75.153.0/25",
+        "77.75.156.11/32", "77.75.156.35/32", "77.75.154.128/25", "2a02:5180::/32",
+    ]
 
     cryptobot_token: str | None = None
     cryptobot_base_url: AnyHttpUrl = "https://pay.crypt.bot/api"
@@ -61,7 +68,17 @@ class Settings(BaseSettings):
     node_timestamp_tolerance_seconds: int = 90
     node_task_max_attempts: int = 5
     node_task_retry_base_seconds: int = 15
+    node_task_lease_seconds: int = 60
+    payment_invoice_creation_lease_seconds: int = 30
+    panel_task_max_attempts: int = 5
+    panel_task_retry_base_seconds: int = 15
+    panel_task_lease_seconds: int = 60
     node_status_sync_interval_seconds: int = 60
+    node_status_sync_concurrency: int = 10
+    node_status_sync_batch_size: int = 100
+    node_status_probe_lease_seconds: int = 30
+    node_health_stale_after_seconds: int = 180
+    node_unavailable_retry_seconds: int = 30
 
     node_agent_node_key: str = "demo-node"
     node_agent_display_name: str = "Demo node"
@@ -82,6 +99,9 @@ class Settings(BaseSettings):
     node_agent_transport_type: str | None = "tcp"
     node_agent_flow: str | None = "xtls-rprx-vision"
     node_agent_encryption: str | None = "none"
+    node_agent_idempotency_db_path: str = "/var/lib/shopbot-node-agent/idempotency.sqlite3"
+    node_agent_operation_lease_seconds: int = 60
+    node_agent_idempotency_retention_days: int = 30
 
     demo_node_auto_register: bool = False
     demo_node_key: str = "demo-node"
@@ -96,7 +116,117 @@ class Settings(BaseSettings):
     worker_queue_name: str = "shopbot"
     request_timeout_seconds: float = 15.0
     background_sync_interval_seconds: int = 300
+    reconciliation_batch_size: int = 500
+    reconciliation_max_batches_per_run: int = 4
+    reconciliation_lease_seconds: int = 120
     admin_contact_type: str = Field(default="telegram_id")
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() in {"prod", "production"}
+
+    @property
+    def node_agent_xui_inbound_id(self) -> int | None:
+        if self.node_agent_runtime_mode != "xui":
+            return None
+        return int(self.node_agent_inbound_id)
+
+    @model_validator(mode="after")
+    def validate_runtime_safety(self) -> "Settings":
+        self._validate_leases()
+        self._validate_scheduler_settings()
+        self._validate_xui_contracts()
+        self._validate_production_guardrails()
+        return self
+
+    def _validate_leases(self) -> None:
+        if self.node_task_lease_seconds <= 0:
+            raise ValueError("node_task_lease_seconds must be positive")
+        minimum_lease = float(self.node_request_timeout_seconds) + 5.0
+        if float(self.node_task_lease_seconds) <= minimum_lease:
+            raise ValueError(
+                "node_task_lease_seconds must be greater than "
+                "node_request_timeout_seconds + 5 seconds"
+            )
+
+        lease_requirements = (
+            ("payment_invoice_creation_lease_seconds", self.payment_invoice_creation_lease_seconds, float(self.request_timeout_seconds) + 5.0),
+            ("panel_task_lease_seconds", self.panel_task_lease_seconds, 3.0 * float(self.request_timeout_seconds) + 5.0),
+            ("node_agent_operation_lease_seconds", self.node_agent_operation_lease_seconds, 3.0 * float(self.request_timeout_seconds) + 5.0),
+        )
+        for field_name, value, minimum in lease_requirements:
+            if value <= 0:
+                raise ValueError(f"{field_name} must be positive")
+            if float(value) <= minimum:
+                raise ValueError(f"{field_name} must be greater than {minimum:g} seconds")
+        if self.webhook_max_body_bytes <= 0:
+            raise ValueError("webhook_max_body_bytes must be positive")
+        if self.panel_task_max_attempts <= 0:
+            raise ValueError("panel_task_max_attempts must be positive")
+        if self.panel_task_retry_base_seconds <= 0:
+            raise ValueError("panel_task_retry_base_seconds must be positive")
+
+    def _validate_scheduler_settings(self) -> None:
+        for name in ("node_status_sync_interval_seconds", "node_status_sync_concurrency", "node_status_sync_batch_size", "node_status_probe_lease_seconds", "node_health_stale_after_seconds", "node_unavailable_retry_seconds", "reconciliation_batch_size", "reconciliation_max_batches_per_run", "reconciliation_lease_seconds"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.node_health_stale_after_seconds < 2 * self.node_status_sync_interval_seconds + self.node_request_timeout_seconds:
+            raise ValueError("node_health_stale_after_seconds must cover two sync intervals and request timeout")
+
+    def _validate_xui_contracts(self) -> None:
+        if self.node_agent_runtime_mode == "xui":
+            value = self.node_agent_inbound_id.strip()
+            try:
+                inbound_id = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("NODE_AGENT_INBOUND_ID must be a positive integer in xui mode") from exc
+            if inbound_id <= 0:
+                raise ValueError("NODE_AGENT_INBOUND_ID must be a positive integer in xui mode")
+        if (self.panel_mode == "xui" or self.node_agent_runtime_mode == "xui") and (
+            not self.xui_base_url or not self.xui_username or not self.xui_password
+        ) and self.is_production:
+            raise ValueError("XUI credentials are missing")
+
+    def _validate_production_guardrails(self) -> None:
+
+        if not self.is_production:
+            return
+
+        placeholder_fields = sorted(
+            name
+            for name, value in self.model_dump().items()
+            if isinstance(value, str) and value.strip().lower().startswith("change-me-")
+        )
+        errors: list[str] = []
+        if placeholder_fields:
+            errors.append("change-me placeholders: " + ", ".join(placeholder_fields))
+        if self.payment_default_provider == "dummy":
+            errors.append("dummy payment provider")
+        if self.payment_default_provider == "yookassa" and (not self.yookassa_shop_id or not self.yookassa_secret_key):
+            errors.append("YooKassa credentials are missing")
+        if (self.panel_mode == "xui" or self.node_agent_runtime_mode == "xui") and (
+            not self.xui_base_url or not self.xui_username or not self.xui_password
+        ):
+            errors.append("XUI credentials are missing")
+        try:
+            parsed_db = urlparse(self.database_url.replace("+asyncpg", ""))
+            db_password = unquote(parsed_db.password or "").strip().lower()
+            if db_password in {"shopbot", "password", "postgres", "change-me", "changeme", "replace-me"}:
+                errors.append("obvious default database password")
+        except ValueError:
+            errors.append("invalid database URL")
+        if self.payment_default_provider in {"cryptobot", "heleket", "ton"}:
+            errors.append(f"{self.payment_default_provider} payment provider is quarantined in production")
+        if self.node_agent_runtime_mode == "stub":
+            errors.append("stub node agent runtime")
+        if self.panel_mode == "stub":
+            errors.append("stub panel runtime")
+        if self.auto_seed_demo_data:
+            errors.append("auto demo seed enabled")
+        if self.demo_node_auto_register:
+            errors.append("demo node auto-register enabled")
+        if errors:
+            raise ValueError("Unsafe production configuration: " + "; ".join(errors))
 
 
 @lru_cache(maxsize=1)

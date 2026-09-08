@@ -1,62 +1,9 @@
-﻿# Environment
-.env
-.env.local
-.env.*.local
-
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
-python_env/
-venv/
-.venv/
-env/
-ENV/
-
-# Docker / local data
-docker-data/
-postgres-data/
-redis-data/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-
-# Secrets / certificates
-*.pem
-*.key
-*.crt
-*.csr
-*.p12
-*.pfx
-
-# Databases
-*.sqlite
-*.sqlite3
-*.db
-
-# Build
-dist/
-build/
 *.egg-info/
-
-# Node
-node_modules/
-
-# Misc
-.coverage
 .pytest_cache/
 .mypy_cache/
-.ruff_cache/
+.venv/
+.env
+.coverage
+htmlcov/

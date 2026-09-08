@@ -64,7 +64,6 @@ class DashboardVpnConfigurationResponse(BaseModel):
     host: str
     port: int
     uri: str | None = None
-    subscription_url: str | None = None
 
 
 class BotDashboardResponse(BaseModel):

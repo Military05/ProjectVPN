@@ -1,6 +1,6 @@
 # Отчёт о промежуточной реализации
 
-В архив внесена безопасная частичная реализация спецификации `Решения проблем`.
+В ветке `main` репозитория `ProjectVPN` ведётся безопасная поэтапная реализация спецификации `Решения проблем`.
 
 ## Готово
 
@@ -19,12 +19,14 @@
 - Добавлен authenticated Node Agent journal retirement endpoint.
 - После schema assertion worker выполняет один bounded startup recovery pass (до 100 записей каждого типа): received payment events, stale/due node tasks, panel provision tasks и panel revoke tasks.
 - Удалён глобальный Redis service locator (`get_redis`/`set_redis`): Redis теперь принадлежит DI container; добавлены architecture guards против возврата locator и новых production imports через compatibility `infrastructure/db`.
+- Завершён `CHANGE-10`: создание и повтор заказа вынесены в stateless `OrderFlow`; удалены process-local `_order_intents` и `OrderIntentContext`; после перезапуска бота callback повторно получает актуальный enabled-тариф из backend и использует прежний idempotency key `tg-ui2:{telegram_id}:{tariff_id}:{intent_id}`.
+- `Settings.bot_dedup_ttl_seconds` теперь передаётся в Telegram controller и используется для всех Telegram dedup keys вместо hardcoded TTL; неположительное значение отклоняется конфигурацией.
 
 ## Проверено
 
 - `python -m compileall -q src tests alembic` — успешно.
-- Целевые тесты новых изменений: `10 passed`.
-- Полный `pytest -q` впервые выполнен: `159 passed, 34 failed`. Все 34 падения воспроизводятся на входном checkpoint и относятся к ранее частично реализованным config/payment/node/runtime/contract changes; выбранные в этом этапе изменения новых падений не добавили. Для сравнения нетронутая копия входного checkpoint: `154 passed, 35 failed` (четыре новых passing-теста плюс исправленная отсутствующая type annotation объясняют разницу).
+- Целевые тесты `CHANGE-10` и архитектурных границ: `14 passed`.
+- Полный `pytest -q`: `165 passed, 34 failed`. До `CHANGE-10` тот же `main` давал `159 passed, 34 failed`; шесть новых regression-тестов проходят, набор из 34 унаследованных падений не изменился.
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
 ## Осталось для следующего этапа
@@ -33,9 +35,15 @@
 - Завершить surgical reconciliation с maintenance lease и bounded anomaly batches.
 - Переключить active fake outbox code на audit log, сохранив compatibility tombstone.
 - Завершить locking/capacity reservation в каждом production writer и panel equivalent.
-- Stateless Telegram retry/order_flow и полная admin pagination UI.
+- Полная admin pagination UI.
 - Сгенерировать настоящие hash-pinned runtime/dev/build lock-файлы и выполнить clean install/pytest acceptance gate.
 - Выполнить integration tests на PostgreSQL/Redis и проверить upgrade path 0006→0007→0008→0009.
 - Исправить 34 унаследованных падения полного набора тестов перед production acceptance gate.
 
-Архив является промежуточным checkpoint для продолжения работы, а не заявлением о полном прохождении production acceptance gate.
+Текущая ветка `main` является промежуточным checkpoint для продолжения работы, а не заявлением о полном прохождении production acceptance gate.
+
+## Что делать в следующем промпте
+
+Рекомендуемый следующий один пункт — завершить `CHANGE-11` (admin pagination): проверить stable primary-key ordering и `limit+1` во всех требуемых repository/API списках, затем добавить навигацию по страницам в admin UI. Начинать с актуальной ветки `main`; `CHANGE-10`, `CHANGE-13` и выполненную targeted-часть `CHANGE-16` повторно не делать.
+
+После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `165 passed, 34 failed`.

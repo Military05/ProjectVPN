@@ -167,7 +167,19 @@ class Settings(BaseSettings):
             raise ValueError("panel_task_retry_base_seconds must be positive")
 
     def _validate_scheduler_settings(self) -> None:
-        for name in ("node_status_sync_interval_seconds", "node_status_sync_concurrency", "node_status_sync_batch_size", "node_status_probe_lease_seconds", "node_health_stale_after_seconds", "node_unavailable_retry_seconds", "reconciliation_batch_size", "reconciliation_max_batches_per_run", "reconciliation_lease_seconds"):
+        positive_settings = (
+            "bot_dedup_ttl_seconds",
+            "node_status_sync_interval_seconds",
+            "node_status_sync_concurrency",
+            "node_status_sync_batch_size",
+            "node_status_probe_lease_seconds",
+            "node_health_stale_after_seconds",
+            "node_unavailable_retry_seconds",
+            "reconciliation_batch_size",
+            "reconciliation_max_batches_per_run",
+            "reconciliation_lease_seconds",
+        )
+        for name in positive_settings:
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.node_health_stale_after_seconds < 2 * self.node_status_sync_interval_seconds + self.node_request_timeout_seconds:

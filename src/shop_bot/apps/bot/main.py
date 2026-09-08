@@ -25,6 +25,7 @@ async def run_bot() -> None:
             backend=backend,
             deduplicator=container.deduplicator,
             provider=container.settings.payment_default_provider,
+            dedup_ttl_seconds=container.settings.bot_dedup_ttl_seconds,
         )
     )
 

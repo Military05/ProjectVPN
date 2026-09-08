@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import secrets
 import string
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from typing import Any
@@ -39,6 +38,7 @@ from shop_bot.apps.bot.keyboards import (
     tariff_refresh_keyboard,
     tariffs_keyboard,
 )
+from shop_bot.apps.bot.order_flow import OrderFlow, TariffUnavailableError
 from shop_bot.infrastructure.redis.dedup import RedisDeduplicator
 from shop_bot.schemas.bot import BotCreateOrderResponse, BotDashboardResponse, TariffResponse
 
@@ -99,11 +99,11 @@ ORDER_ERROR_TEXT = """<b>Не удалось создать оплату</b>
 
 Запрос не завершился. Повторите действие или вернитесь к тарифам."""
 
+ORDER_CREATING_TEXT = """<b>Создаю оплату</b>
 
-@dataclass(frozen=True, slots=True)
-class OrderIntentContext:
-    tariff_name: str
-    price_display: str
+Проверяю актуальный тариф и создаю ссылку на оплату.
+
+Подождите — запрос уже обрабатывается."""
 
 
 class BotMessagePresenter:
@@ -168,13 +168,14 @@ class TelegramBotController:
         backend: BackendApiClient,
         deduplicator: RedisDeduplicator,
         provider: str,
+        dedup_ttl_seconds: int,
         presenter: BotMessagePresenter | None = None,
     ) -> None:
         self._backend = backend
         self._deduplicator = deduplicator
-        self._provider = provider
+        self._dedup_ttl_seconds = dedup_ttl_seconds
         self._presenter = presenter or BotMessagePresenter()
-        self._order_intents: dict[tuple[int, int, str], OrderIntentContext] = {}
+        self._order_flow = OrderFlow(backend=backend, provider=provider)
 
     def build_router(self) -> Router:
         router = Router()
@@ -316,17 +317,15 @@ class TelegramBotController:
         if not await self._accept_callback(callback):
             return
         parsed = _parse_order_callback(callback.data, prefix="ui2:o:")
-        display_context = _intent_context_from_button(callback)
-        if parsed is None or display_context is None:
+        if parsed is None:
             await self._render_stale_callback(callback)
             return
         tariff_id, intent_id = parsed
         if not await self._deduplicator.ensure_once(
             key=f"telegram:ui2:intent:{callback.from_user.id}:{tariff_id}:{intent_id}",
-            ttl_seconds=86400,
+            ttl_seconds=self._dedup_ttl_seconds,
         ):
             return
-        self._order_intents[(callback.from_user.id, tariff_id, intent_id)] = display_context
         await self._create_order(callback, tariff_id=tariff_id, intent_id=intent_id)
 
     async def retry_order_callback(self, callback: CallbackQuery) -> None:
@@ -337,9 +336,6 @@ class TelegramBotController:
             await self._render_stale_callback(callback)
             return
         tariff_id, intent_id = parsed
-        if (callback.from_user.id, tariff_id, intent_id) not in self._order_intents:
-            await self._render_stale_callback(callback)
-            return
         await self._create_order(callback, tariff_id=tariff_id, intent_id=intent_id)
 
     async def legacy_buy_callback(self, callback: CallbackQuery) -> None:
@@ -460,7 +456,6 @@ class TelegramBotController:
         telegram_id: int,
         tariffs: list[TariffResponse],
     ) -> None:
-        self._clear_order_intents(telegram_id)
         if not tariffs:
             await self._presenter.replace_message(
                 target,
@@ -525,47 +520,29 @@ class TelegramBotController:
         tariff_id: int,
         intent_id: str,
     ) -> None:
-        key = (callback.from_user.id, tariff_id, intent_id)
-        context = self._order_intents[key]
         target = await self._presenter.render_callback(
             callback,
-            _order_creating_text(context),
+            ORDER_CREATING_TEXT,
             preserve_source=_is_artifact_source(callback),
         )
         if target is None:
             return
         try:
             await self._register_callback_user(callback)
-            tariffs = _enabled_tariffs(await self._backend.list_tariffs())
-            tariff = next((item for item in tariffs if item.tariff_id == tariff_id), None)
-            if tariff is None:
-                self._order_intents.pop(key, None)
-                await self._presenter.replace_message(
-                    target,
-                    TARIFF_STALE_TEXT,
-                    reply_markup=tariff_refresh_keyboard(),
-                )
-                return
-
-            fresh_context = OrderIntentContext(
-                tariff_name=tariff.tariff_name,
-                price_display=_format_price(tariff.price_minor, tariff.currency),
-            )
-            if fresh_context != context:
-                self._order_intents[key] = fresh_context
-                context = fresh_context
-                await self._presenter.replace_message(target, _order_creating_text(context))
-
-            order = await self._backend.create_order(
+            result = await self._order_flow.create_or_retry(
                 telegram_id=callback.from_user.id,
                 tariff_id=tariff_id,
-                provider=self._provider,
-                idempotency_key=(
-                    f"tg-ui2:{callback.from_user.id}:{tariff_id}:{intent_id}"
-                ),
+                intent_id=intent_id,
                 username=callback.from_user.username,
                 name_or_nick=_display_name(callback),
             )
+        except TariffUnavailableError:
+            await self._presenter.replace_message(
+                target,
+                TARIFF_STALE_TEXT,
+                reply_markup=tariff_refresh_keyboard(),
+            )
+            return
         except Exception:
             logger.exception("Telegram UI v2 create order failed")
             await self._presenter.replace_message(
@@ -575,8 +552,7 @@ class TelegramBotController:
             )
             return
 
-        self._order_intents.pop(key, None)
-        await self._render_payment_artifact(target, order)
+        await self._render_payment_artifact(target, result.order)
 
     async def _render_payment_artifact(
         self,
@@ -647,7 +623,7 @@ class TelegramBotController:
     async def _accept_message(self, message: Message) -> bool:
         return await self._deduplicator.ensure_once(
             key=f"telegram:message:{message.chat.id}:{message.message_id}",
-            ttl_seconds=3600,
+            ttl_seconds=self._dedup_ttl_seconds,
         )
 
     async def _accept_callback(self, callback: CallbackQuery) -> bool:
@@ -655,24 +631,21 @@ class TelegramBotController:
         await callback.answer()
         return await self._deduplicator.ensure_once(
             key=f"telegram:callback:{callback.from_user.id}:{callback.id}",
-            ttl_seconds=3600,
+            ttl_seconds=self._dedup_ttl_seconds,
         )
-
-    def _clear_order_intents(self, telegram_id: int) -> None:
-        stale_keys = [key for key in self._order_intents if key[0] == telegram_id]
-        for key in stale_keys:
-            self._order_intents.pop(key, None)
 
 
 def setup_router(
     backend: BackendApiClient,
     deduplicator: RedisDeduplicator,
     provider: str,
+    dedup_ttl_seconds: int,
 ) -> Router:
     return TelegramBotController(
         backend=backend,
         deduplicator=deduplicator,
         provider=provider,
+        dedup_ttl_seconds=dedup_ttl_seconds,
     ).build_router()
 
 
@@ -753,15 +726,6 @@ def _tariffs_text(tariffs: list[TariffResponse]) -> str:
     )
 
 
-def _order_creating_text(context: OrderIntentContext) -> str:
-    return (
-        "<b>Создаю оплату</b>\n\n"
-        f"Тариф: {escape(context.tariff_name)}\n"
-        f"Сумма: <b>{escape(context.price_display)}</b>\n\n"
-        "Подождите — запрос уже обрабатывается."
-    )
-
-
 def _payment_ready_text(order: BotCreateOrderResponse) -> str:
     return (
         f"<b>Заказ #{order.payment_order_id}</b>\n\n"
@@ -787,26 +751,6 @@ def _payment_dev_local_text(order: BotCreateOrderResponse) -> str:
         f"<code>{escape(order.payment_url or '')}</code>\n\n"
         "Откройте её вручную в среде разработки."
     )
-
-
-def _intent_context_from_button(callback: CallbackQuery) -> OrderIntentContext | None:
-    source = callback.message
-    if not isinstance(source, Message) or source.reply_markup is None:
-        return None
-    callback_data = callback.data or ""
-    for row in source.reply_markup.inline_keyboard:
-        for button in row:
-            if button.callback_data != callback_data:
-                continue
-            prefix = "Выбрать · "
-            if not button.text.startswith(prefix):
-                return None
-            body = button.text[len(prefix) :]
-            parts = body.rsplit(" · ", 1)
-            if len(parts) != 2 or not parts[0] or not parts[1]:
-                return None
-            return OrderIntentContext(tariff_name=parts[0], price_display=parts[1])
-    return None
 
 
 def _parse_order_callback(data: str | None, *, prefix: str) -> tuple[int, str] | None:

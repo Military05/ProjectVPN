@@ -14,6 +14,14 @@
   }
 
   const STORAGE_KEY = "shopbot-admin-token";
+  const SERVER_PAGE_SIZE = 50;
+  const SERVER_PAGINATED_DATASETS = new Set([
+    "subscriptions",
+    "vpn",
+    "payments",
+    "nodes",
+    "tasks",
+  ]);
   const DATASETS = [
     ["tariffs", "/admin/tariffs"],
     ["servers", "/admin/servers"],
@@ -50,6 +58,7 @@
     search: {},
     filters: {},
     pagination: {},
+    serverPagination: {},
     lastLoadedAt: null,
   };
 
@@ -150,6 +159,7 @@
     state.token = "";
     state.data = {};
     state.errors = {};
+    state.serverPagination = {};
     sessionStorage.removeItem(STORAGE_KEY);
     closeMobileMenu();
     showLogin();
@@ -180,12 +190,11 @@
     renderRoute();
 
     const results = await Promise.all(
-      DATASETS.map(async ([key, path, options]) => {
+      DATASETS.map(async (dataset) => {
         try {
-          const data = await apiRequest(path, {}, options);
-          return { key, data };
+          return await fetchDataset(dataset);
         } catch (error) {
-          return { key, error };
+          return { key: dataset[0], error };
         }
       }),
     );
@@ -199,6 +208,9 @@
         }
       } else {
         state.data[result.key] = result.data;
+        if (result.page) {
+          state.serverPagination[result.key] = result.page;
+        }
       }
     }
     state.errors = nextErrors;
@@ -209,6 +221,18 @@
       logout();
       showToast("danger", "Сессия не авторизована", "Проверьте ADMIN_API_TOKEN и войдите снова.");
     }
+  }
+
+  async function fetchDataset([key, path, options]) {
+    const requestedPage = SERVER_PAGINATED_DATASETS.has(key) ? getServerPage(key) : null;
+    const requestPath = requestedPage
+      ? `${path}?limit=${SERVER_PAGE_SIZE}&offset=${requestedPage.offset}`
+      : path;
+    const result = await apiRequest(requestPath, {}, { ...(options || {}), requestedPage });
+    if (requestedPage) {
+      return { key, data: result.data, page: result.page };
+    }
+    return { key, data: result };
   }
 
   async function apiRequest(path, options = {}, endpointOptions = {}) {
@@ -243,7 +267,27 @@
       const detail = payload && typeof payload === "object" ? payload.detail : payload;
       throw new ApiProblem(String(detail || response.statusText), response.status, detail);
     }
-    return payload || null;
+    const data = payload || null;
+    if (endpointOptions.requestedPage) {
+      const requestedPage = endpointOptions.requestedPage;
+      return {
+        data,
+        page: {
+          limit: pageHeaderNumber(response, "X-Page-Limit", requestedPage.limit),
+          offset: pageHeaderNumber(response, "X-Page-Offset", requestedPage.offset),
+          hasMore: (response.headers.get("X-Has-More") || "").toLowerCase() === "true",
+          itemCount: Array.isArray(data) ? data.length : 0,
+        },
+      };
+    }
+    return data;
+  }
+
+  function pageHeaderNumber(response, name, fallback) {
+    const raw = response.headers.get(name);
+    if (raw === null) return fallback;
+    const value = Number(raw);
+    return Number.isInteger(value) && value >= 0 ? value : fallback;
   }
 
   function renderNav() {
@@ -335,6 +379,11 @@
         state.pagination[button.dataset.routePage] = Number(button.dataset.page || 1);
         renderRoute();
       },
+      changeServerPage: () => changeServerPage(
+        button.dataset.pageDataset,
+        button.dataset.pageDirection,
+        button,
+      ),
     };
 
     if (actions[action]) {
@@ -376,6 +425,47 @@
     return Array.isArray(value) ? value : [];
   }
 
+  function getServerPage(key) {
+    return state.serverPagination[key] || {
+      limit: SERVER_PAGE_SIZE,
+      offset: 0,
+      hasMore: false,
+      itemCount: 0,
+    };
+  }
+
+  async function changeServerPage(key, direction, button) {
+    if (!SERVER_PAGINATED_DATASETS.has(key)) return;
+    const dataset = DATASETS.find(([datasetKey]) => datasetKey === key);
+    if (!dataset) return;
+
+    const currentPage = getServerPage(key);
+    if (direction === "next" && !currentPage.hasMore) return;
+    const nextOffset = direction === "next"
+      ? currentPage.offset + SERVER_PAGE_SIZE
+      : Math.max(currentPage.offset - SERVER_PAGE_SIZE, 0);
+    if (nextOffset === currentPage.offset) return;
+
+    state.serverPagination[key] = { ...currentPage, offset: nextOffset };
+    setButtonPending(button, true, "Загружаем...");
+    try {
+      const result = await fetchDataset(dataset);
+      state.data[key] = result.data;
+      state.serverPagination[key] = result.page;
+      const nextErrors = { ...state.errors };
+      delete nextErrors[key];
+      state.errors = nextErrors;
+      state.lastLoadedAt = new Date();
+      renderRoute();
+    } catch (error) {
+      state.serverPagination[key] = currentPage;
+      state.errors = { ...state.errors, [key]: error };
+      showToast("danger", "Страница не загрузилась", humanizeError(error));
+    } finally {
+      if (document.body.contains(button)) setButtonPending(button, false);
+    }
+  }
+
   function renderDashboard() {
     const tariffs = data("tariffs");
     const servers = data("servers");
@@ -396,7 +486,7 @@
     if (!tariffs.length) warnings.push("Создайте первый тариф, чтобы бот мог продавать подписки.");
     if (!servers.length) warnings.push("Добавьте сервер с публичным VLESS host.");
     if (!endpoints.length) warnings.push("Добавьте endpoint, чтобы выдавать рабочие конфигурации.");
-    if (nodes.length && onlineNodes.length === 0) warnings.push("Все узлы сейчас выглядят недоступными.");
+    if (nodes.length && onlineNodes.length === 0) warnings.push("На загруженной странице нет online-узлов.");
     if (state.errors.ready) warnings.push("Readiness-проверка API не прошла: БД или Redis могут быть недоступны.");
 
     return `
@@ -412,10 +502,10 @@
       ${renderErrorSummary()}
       ${warnings.length ? alertBox("warning", "Что требует внимания", warnings.join(" ")) : ""}
       <section class="grid-4" aria-label="Ключевые метрики">
-        ${statCard("Активные подписки", activeSubscriptions.length, "Клиенты с активным доступом")}
-        ${statCard("VPN-конфиги", activeVpn.length, "Активные ключи в системе")}
-        ${statCard("Оплачено", formatMoney(revenue, payments[0]?.currency || "RUB"), `${paidPayments.length} успешных платежей`)}
-        ${statCard("Узлы онлайн", `${onlineNodes.length}/${nodes.length || 0}`, `${pendingTasks.length} задач ожидают обработки`)}
+        ${statCard("Активные подписки", activeSubscriptions.length, "На загруженной странице")}
+        ${statCard("VPN-конфиги", activeVpn.length, "Активные на загруженной странице")}
+        ${statCard("Оплачено", formatMoney(revenue, payments[0]?.currency || "RUB"), `${paidPayments.length} на загруженной странице`)}
+        ${statCard("Узлы онлайн", `${onlineNodes.length}/${nodes.length || 0}`, `${pendingTasks.length} задач на загруженной странице`)}
       </section>
       <section class="grid-2 mt-5">
         <div class="card">
@@ -463,10 +553,10 @@
       <div class="card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Последние платежи</h2>
-            <p class="card-subtitle">Фокус на статусе и ручном восстановлении.</p>
+            <h2 class="card-title">Платежи на текущей странице</h2>
+            <p class="card-subtitle">Первые шесть записей загруженной страницы.</p>
           </div>
-          <a class="btn btn-ghost btn-sm" href="#/payments">Все платежи</a>
+          <a class="btn btn-ghost btn-sm" href="#/payments">Открыть платежи</a>
         </div>
         <div class="card-body">
           ${items.length ? `<div class="timeline">${items.map((order) => `
@@ -477,7 +567,7 @@
                 <span>${humanStatus(order.status)} · пользователь #${escapeHtml(order.user_id)} · ${formatDateTime(order.created_at)}</span>
               </div>
             </div>
-          `).join("")}</div>` : emptyState("Платежей пока нет", "Когда бот создаст первый заказ, он появится в этом блоке.", "↗")}
+          `).join("")}</div>` : emptyState("На загруженной странице платежей нет", "Откройте список платежей и перейдите на другую страницу.", "↗")}
         </div>
       </div>
     `;
@@ -490,9 +580,9 @@
         <div class="card-header">
           <div>
             <h2 class="card-title">Узлы и очередь</h2>
-            <p class="card-subtitle">Multinode-контур ближе к управлению сервисом, как в vless-shopbot.</p>
+            <p class="card-subtitle">Сводка по загруженным страницам multinode-контура.</p>
           </div>
-          <a class="btn btn-ghost btn-sm" href="#/nodes">Все узлы</a>
+          <a class="btn btn-ghost btn-sm" href="#/nodes">Открыть узлы</a>
         </div>
         <div class="card-body">
           ${items.length ? `<div class="timeline">${items.map((node) => `
@@ -500,10 +590,10 @@
               <span class="status-dot status-${statusTone(getNodeStatus(node))}" aria-hidden="true"></span>
               <div class="timeline-content">
                 <strong>${escapeHtml(node.display_name || node.node_key)} ${badge(getNodeStatus(node))}</strong>
-                <span>${escapeHtml(node.api_base_url || "API URL не задан")} · задач: ${tasks.filter((task) => Number(task.node_id) === Number(node.node_id)).length}</span>
+                <span>${escapeHtml(node.api_base_url || "API URL не задан")} · задач на странице: ${tasks.filter((task) => Number(task.node_id) === Number(node.node_id)).length}</span>
               </div>
             </div>
-          `).join("")}</div>` : emptyState("Узлы ещё не добавлены", "Добавьте node-agent, чтобы управлять несколькими 3x-ui серверами централизованно.", "◆", `<button class="btn btn-primary" type="button" data-action="createNode">Добавить узел</button>`)}
+          `).join("")}</div>` : emptyState("На загруженной странице узлы не найдены", "Откройте список узлов или добавьте новый node-agent.", "◆", `<button class="btn btn-primary" type="button" data-action="createNode">Добавить узел</button>`)}
         </div>
       </div>
     `;
@@ -519,14 +609,14 @@
     return `
       ${pageHeader({
         title: "Клиенты",
-        description: "Сводка по пользователям собрана из подписок, заказов и VPN-конфигураций без изменения API.",
+        description: "Сводка собрана только из текущих загруженных страниц подписок, заказов и VPN-конфигураций.",
         actions: `<a class="btn btn-secondary" href="#/subscriptions">Открыть подписки</a>`,
       })}
       ${filterBar("clients", { placeholder: "Поиск по user ID, тарифу или статусу", statusOptions: statusOptions(["all", "active", "ended", "cancelled", "paused"]) })}
       ${renderTable({
         route: "clients",
         rows: filtered,
-        empty: emptyState("Клиенты пока не найдены", "После регистрации через Telegram здесь появится клиентская сводка.", "👥"),
+        empty: emptyState("На загруженных страницах клиенты не найдены", "Перейдите по страницам исходных списков, чтобы просмотреть другие записи.", "👥"),
         columns: [
           { label: "Клиент", render: (row) => titleCell(`Пользователь #${row.user_id}`, `${row.orders} заказов · ${row.configs} VPN-конфигов`) },
           { label: "Статус", render: (row) => badge(row.status) },
@@ -691,7 +781,7 @@
       ${renderTable({
         route: "nodes",
         rows,
-        empty: emptyState("Узлы пока не добавлены", "Добавьте первый node-agent, чтобы включить multinode-режим.", "◆", `<button class="btn btn-primary" type="button" data-action="createNode">Добавить узел</button>`),
+        empty: emptyState("На текущей странице узлы не найдены", "Измените фильтр, перейдите назад или добавьте новый node-agent.", "◆", `<button class="btn btn-primary" type="button" data-action="createNode">Добавить узел</button>`),
         columns: [
           { label: "Узел", render: (row) => titleCell(row.display_name || row.node_key, row.api_base_url) },
           { label: "Состояние", render: (row) => `${badge(getNodeStatus(row))}<span class="cell-subtitle">${escapeHtml(row.agent_version || "version unknown")}</span>` },
@@ -722,7 +812,7 @@
       ${renderTable({
         route: "payments",
         rows,
-        empty: emptyState("Платежей пока нет", "Когда клиент оформит подписку, заказ появится здесь.", "↗"),
+        empty: emptyState("На текущей странице платежи не найдены", "Измените фильтр или перейдите на соседнюю страницу.", "↗"),
         columns: [
           { label: "Заказ", render: (row) => titleCell(`#${row.payment_order_id}`, `user #${row.user_id}`) },
           { label: "Провайдер", render: (row) => badge(row.provider || "unknown", "info") },
@@ -752,7 +842,7 @@
       ${renderTable({
         route: "subscriptions",
         rows,
-        empty: emptyState("Подписок пока нет", "Новые подписки появятся после успешного платежа или регистрации заказа.", "◴"),
+        empty: emptyState("На текущей странице подписки не найдены", "Измените фильтр или перейдите на соседнюю страницу.", "◴"),
         columns: [
           { label: "Подписка", render: (row) => titleCell(`#${row.subscription_id}`, `user #${row.user_id}`) },
           { label: "Тариф", render: (row) => titleCell(row.tariff_name || `tariff #${row.tariff_id}`, `tariff ID ${row.tariff_id}`) },
@@ -784,7 +874,7 @@
       ${renderTable({
         route: "vpn",
         rows,
-        empty: emptyState("VPN-конфигов пока нет", "После provisioning здесь появятся выданные ключи клиентов.", "⌘"),
+        empty: emptyState("На текущей странице VPN-конфиги не найдены", "Измените фильтр или перейдите на соседнюю страницу.", "⌘"),
         columns: [
           { label: "Конфиг", render: (row) => titleCell(row.display_name || `config #${row.vpn_configuration_id}`, `subscription #${row.subscription_id}`) },
           { label: "UUID", render: (row) => copyableText(row.client_uuid) },
@@ -816,7 +906,7 @@
       ${renderTable({
         route: "tasks",
         rows,
-        empty: emptyState("Очередь пуста", "Когда системе нужно выдать или отозвать доступ, задача появится здесь.", "↻"),
+        empty: emptyState("На текущей странице задачи не найдены", "Измените фильтр или перейдите на соседнюю страницу.", "↻"),
         columns: [
           { label: "Задача", render: (row) => titleCell(`#${row.node_task_id}`, `${row.operation || "operation"} · node #${row.node_id}`) },
           { label: "Статус", render: (row) => badge(row.status) },
@@ -1313,10 +1403,17 @@
   }
 
   function renderTable({ route, rows, columns, empty }) {
+    const serverPaginated = SERVER_PAGINATED_DATASETS.has(route);
     if (!rows.length) {
-      return `<div class="card">${empty}</div>`;
+      return `
+        <div class="card">
+          ${empty}
+          ${serverPaginated ? renderServerPagination(route) : ""}
+        </div>
+      `;
     }
-    const { pageRows, totalPages, page } = paginate(route, rows);
+    const clientPage = serverPaginated ? null : paginate(route, rows);
+    const pageRows = clientPage ? clientPage.pageRows : rows;
     return `
       <div class="card table-card">
         <div class="table-scroll">
@@ -1331,7 +1428,11 @@
             </tbody>
           </table>
         </div>
-        ${totalPages > 1 ? renderPagination(route, page, totalPages) : ""}
+        ${serverPaginated
+          ? renderServerPagination(route)
+          : clientPage.totalPages > 1
+            ? renderPagination(route, clientPage.page, clientPage.totalPages)
+            : ""}
       </div>
     `;
   }
@@ -1353,6 +1454,23 @@
     `;
   }
 
+  function renderServerPagination(route) {
+    const page = getServerPage(route);
+    const pageNumber = Math.floor(page.offset / SERVER_PAGE_SIZE) + 1;
+    const range = page.itemCount
+      ? `Загружены записи ${page.offset + 1}–${page.offset + page.itemCount}`
+      : "На текущей странице записей нет";
+    return `
+      <div class="pagination" aria-label="Серверная пагинация">
+        <span class="pagination-copy muted">Страница ${pageNumber}. ${range}; это не полный список.</span>
+        <div class="pagination-actions">
+          <button class="btn btn-secondary btn-sm" type="button" ${page.offset === 0 ? "disabled" : ""} data-action="changeServerPage" data-page-dataset="${route}" data-page-direction="previous">Назад</button>
+          <button class="btn btn-secondary btn-sm" type="button" ${page.hasMore ? "" : "disabled"} data-action="changeServerPage" data-page-dataset="${route}" data-page-direction="next">Вперёд</button>
+        </div>
+      </div>
+    `;
+  }
+
   function filterBar(route, { placeholder, statusOptions: options }) {
     const searchValue = state.search[route] || "";
     const status = getFilter(route, "status", "all");
@@ -1362,6 +1480,7 @@
           <label class="field field-fluid">
             <span class="field-label">Поиск</span>
             <input class="input" type="search" data-search="${route}" value="${escapeAttr(searchValue)}" placeholder="${escapeAttr(placeholder)}" />
+            ${SERVER_PAGINATED_DATASETS.has(route) ? `<span class="field-help">Поиск применяется только к текущей странице из ${SERVER_PAGE_SIZE} записей.</span>` : ""}
           </label>
           <label class="field">
             <span class="field-label">Статус</span>

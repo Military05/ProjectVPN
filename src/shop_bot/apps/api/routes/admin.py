@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from shop_bot.apps.api.deps import get_container
+from shop_bot.apps.api.pagination import set_pagination_headers
 from shop_bot.bootstrap.container import ServiceContainer
 from shop_bot.core.security import require_admin_token
 from shop_bot.schemas.admin import CreateServerEndpointRequest, CreateServerRequest, CreateTariffRequest
@@ -58,28 +59,37 @@ async def create_server_endpoint(
 
 @router.get("/subscriptions")
 async def list_subscriptions(
-    response: Response, limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), container: ServiceContainer = Depends(get_container),
+    response: Response,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    container: ServiceContainer = Depends(get_container),
 ) -> list[dict[str, Any]]:
     rows = await container.applications.admin.list_subscriptions(limit=limit + 1, offset=offset)
-    response.headers.update({"X-Page-Limit": str(limit), "X-Page-Offset": str(offset), "X-Has-More": str(len(rows) > limit).lower()})
+    set_pagination_headers(response, limit=limit, offset=offset, has_more=len(rows) > limit)
     return rows[:limit]
 
 
 @router.get("/vpn-configurations")
 async def list_vpn_configurations(
-    response: Response, limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), container: ServiceContainer = Depends(get_container),
+    response: Response,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    container: ServiceContainer = Depends(get_container),
 ) -> list[dict[str, Any]]:
     rows = await container.applications.admin.list_vpn_configurations(limit=limit + 1, offset=offset)
-    response.headers.update({"X-Page-Limit": str(limit), "X-Page-Offset": str(offset), "X-Has-More": str(len(rows) > limit).lower()})
+    set_pagination_headers(response, limit=limit, offset=offset, has_more=len(rows) > limit)
     return rows[:limit]
 
 
 @router.get("/payment-orders")
 async def list_payment_orders(
-    response: Response, limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), container: ServiceContainer = Depends(get_container),
+    response: Response,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    container: ServiceContainer = Depends(get_container),
 ) -> list[dict[str, Any]]:
     rows = await container.applications.admin.list_payment_orders(limit=limit + 1, offset=offset)
-    response.headers.update({"X-Page-Limit": str(limit), "X-Page-Offset": str(offset), "X-Has-More": str(len(rows) > limit).lower()})
+    set_pagination_headers(response, limit=limit, offset=offset, has_more=len(rows) > limit)
     return rows[:limit]
 
 

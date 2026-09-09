@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from shop_bot.apps.api.deps import get_container
+from shop_bot.apps.api.pagination import set_pagination_headers
 from shop_bot.bootstrap.container import ServiceContainer
 from shop_bot.core.security import require_admin_token
 from shop_bot.schemas.nodes import (
@@ -17,9 +18,15 @@ router = APIRouter(prefix="/admin/nodes", tags=["nodes"], dependencies=[Depends(
 
 
 @router.get("", response_model=list[NodeResponse])
-async def get_nodes(container: ServiceContainer = Depends(get_container)) -> list[NodeResponse]:
-    rows = await container.queries.nodes.list_nodes()
-    return [NodeResponse.model_validate(row) for row in rows]
+async def get_nodes(
+    response: Response,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    container: ServiceContainer = Depends(get_container),
+) -> list[NodeResponse]:
+    rows = await container.queries.nodes.list_nodes(limit=limit + 1, offset=offset)
+    set_pagination_headers(response, limit=limit, offset=offset, has_more=len(rows) > limit)
+    return [NodeResponse.model_validate(row) for row in rows[:limit]]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -52,9 +59,15 @@ async def sync_node(
 
 
 @router.get("/tasks", response_model=list[NodeTaskResponse])
-async def get_tasks(container: ServiceContainer = Depends(get_container)) -> list[NodeTaskResponse]:
-    rows = await container.queries.nodes.list_tasks()
-    return [NodeTaskResponse.model_validate(row) for row in rows]
+async def get_tasks(
+    response: Response,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    container: ServiceContainer = Depends(get_container),
+) -> list[NodeTaskResponse]:
+    rows = await container.queries.nodes.list_tasks(limit=limit + 1, offset=offset)
+    set_pagination_headers(response, limit=limit, offset=offset, has_more=len(rows) > limit)
+    return [NodeTaskResponse.model_validate(row) for row in rows[:limit]]
 
 
 @router.post("/tasks/{node_task_id}/dispatch")

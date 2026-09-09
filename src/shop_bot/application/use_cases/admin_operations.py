@@ -48,26 +48,17 @@ class AdminOperations:
 
     async def list_subscriptions(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         async with self.uow_factory() as uow:
-            try:
-                rows = await uow.subscriptions.list_subscriptions(limit=limit, offset=offset)
-            except TypeError:
-                rows = await uow.subscriptions.list_subscriptions()
+            rows = await uow.subscriptions.list_subscriptions(limit=limit, offset=offset)
             return [dict(row) for row in rows]
 
     async def list_vpn_configurations(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         async with self.uow_factory() as uow:
-            try:
-                rows = await uow.vpn.list_configurations(limit=limit, offset=offset)
-            except TypeError:
-                rows = await uow.vpn.list_configurations()
+            rows = await uow.vpn.list_configurations(limit=limit, offset=offset)
             return [dict(row) for row in rows]
 
     async def list_payment_orders(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         async with self.uow_factory() as uow:
-            try:
-                rows = await uow.payments.list_orders(limit=limit, offset=offset)
-            except TypeError:
-                rows = await uow.payments.list_orders()
+            rows = await uow.payments.list_orders(limit=limit, offset=offset)
             return [dict(row) for row in rows]
 
     async def mark_payment_order_paid(self, payment_order_id: int) -> dict[str, int | str]:

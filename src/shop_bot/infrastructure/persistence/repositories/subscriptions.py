@@ -154,7 +154,7 @@ class SubscriptionRepository:
                 tariffs.c.tariff_name,
             )
             .join(tariffs, tariffs.c.tariff_id == subscriptions.c.tariff_id)
-            .order_by(subscriptions.c.created_at.desc())
+            .order_by(subscriptions.c.created_at.desc(), subscriptions.c.subscription_id.desc())
             .limit(limit)
             .offset(offset)
         )

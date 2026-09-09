@@ -13,7 +13,8 @@
 - Добавлена базовая node selection policy с freshness, health, capacity и weighted random selection.
 - Health sync переведён на bounded worker pool, per-node completion timestamp и probe token fencing; успешные task operations больше не меняют node health.
 - Payment event lookup переведён на `(provider, event_key)` с rolling compatibility fallback; `PaymentAttempt.apply_provider_status()` стал monotonic и возвращает `APPLIED/DUPLICATE/STALE`; ProcessPayment перечитывает attempt после блокировки order.
-- Добавлены server pagination headers/parameters для admin subscriptions, VPN configurations и payment orders.
+- Завершён `CHANGE-11`: admin API для subscriptions, VPN configurations, payment orders, nodes и node tasks принимает `limit=1..200`/`offset>=0` с backward-compatible defaults `100/0`, запрашивает у repository `limit + 1`, возвращает исходный `list[...]` и заголовки `X-Page-Limit`, `X-Page-Offset`, `X-Has-More` без `COUNT(*)`.
+- Все пять paginated repository-запросов имеют стабильную сортировку с primary-key tiebreaker; admin UI использует server-side страницы по 50 записей, переходы `offset ± 50`, состояние `has_more` из response headers и явно обозначает, что показана только текущая страница.
 - Создание node/server/endpoint/tariff использует DB arbitration через `ON CONFLICT DO NOTHING` и возвращает domain conflict вместо гонки pre-check → insert.
 - Redis оставлен disposable; Prometheus ограничен bind `127.0.0.1:9090`; добавлен отдельный Compose migrate job и schema assertion для worker/readiness.
 - Добавлен authenticated Node Agent journal retirement endpoint.
@@ -25,8 +26,9 @@
 ## Проверено
 
 - `python -m compileall -q src tests alembic` — успешно.
-- Целевые тесты `CHANGE-10` и архитектурных границ: `14 passed`.
-- Полный `pytest -q`: `165 passed, 34 failed`. До `CHANGE-10` тот же `main` давал `159 passed, 34 failed`; шесть новых regression-тестов проходят, набор из 34 унаследованных падений не изменился.
+- Целевые regression-тесты `CHANGE-11`: `18 passed` (HTTP defaults/bounds/body, API query contract, probe row/headers, application forwarding, repository window/stable ordering и UI contract).
+- `node --check` для admin UI JavaScript — успешно; `pip check` — зависимости согласованы.
+- Полный `pytest -q`: `183 passed, 34 failed`. До `CHANGE-11` тот же `main` давал `165 passed, 34 failed`; все 18 новых regression-тестов проходят, точный набор из 34 унаследованных падений не изменился.
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
 ## Осталось для следующего этапа
@@ -35,7 +37,6 @@
 - Завершить surgical reconciliation с maintenance lease и bounded anomaly batches.
 - Переключить active fake outbox code на audit log, сохранив compatibility tombstone.
 - Завершить locking/capacity reservation в каждом production writer и panel equivalent.
-- Полная admin pagination UI.
 - Сгенерировать настоящие hash-pinned runtime/dev/build lock-файлы и выполнить clean install/pytest acceptance gate.
 - Выполнить integration tests на PostgreSQL/Redis и проверить upgrade path 0006→0007→0008→0009.
 - Исправить 34 унаследованных падения полного набора тестов перед production acceptance gate.
@@ -44,6 +45,6 @@
 
 ## Что делать в следующем промпте
 
-Рекомендуемый следующий один пункт — завершить `CHANGE-11` (admin pagination): проверить stable primary-key ordering и `limit+1` во всех требуемых repository/API списках, затем добавить навигацию по страницам в admin UI. Начинать с актуальной ветки `main`; `CHANGE-10`, `CHANGE-13` и выполненную targeted-часть `CHANGE-16` повторно не делать.
+Рекомендуемый следующий один пункт — полностью закрыть `CHANGE-12` (race-safe admin creation): проверить DB-authoritative создание tariff/server/node/endpoint и добавить конкурентный PostgreSQL-тест «один 201, один 409, ни одного 500», включая гарантию, что credential создаётся только для выигравшего node INSERT. Начинать с актуальной ветки `main`; `CHANGE-10`, `CHANGE-11`, `CHANGE-13` и выполненную targeted-часть `CHANGE-16` повторно не делать.
 
-После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `165 passed, 34 failed`.
+После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `183 passed, 34 failed`.

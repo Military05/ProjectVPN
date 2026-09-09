@@ -82,7 +82,7 @@ class PaymentRepository:
     async def list_orders(self, limit: int = 100, offset: int = 0) -> list[Mapping[str, Any]]:
         result = await self.connection.execute(
             select(payment_orders)
-            .order_by(payment_orders.c.created_at.desc())
+            .order_by(payment_orders.c.created_at.desc(), payment_orders.c.payment_order_id.desc())
             .limit(limit)
             .offset(offset)
         )

@@ -171,7 +171,10 @@ class VpnRepository:
             )
             .join(server_endpoints, server_endpoints.c.server_endpoint_id == vpn_configurations.c.server_endpoint_id)
             .join(servers, servers.c.server_id == server_endpoints.c.server_id)
-            .order_by(vpn_configurations.c.created_at.desc())
+            .order_by(
+                vpn_configurations.c.created_at.desc(),
+                vpn_configurations.c.vpn_configuration_id.desc(),
+            )
             .limit(limit)
             .offset(offset)
         )

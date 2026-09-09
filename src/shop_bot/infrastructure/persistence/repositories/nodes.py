@@ -333,7 +333,7 @@ class NodeRepository:
     async def list_tasks(self, limit: int = 100, offset: int = 0) -> list[Mapping[str, Any]]:
         result = await self.connection.execute(
             select(node_tasks)
-            .order_by(node_tasks.c.created_at.desc())
+            .order_by(node_tasks.c.created_at.desc(), node_tasks.c.node_task_id.desc())
             .limit(limit)
             .offset(offset)
         )

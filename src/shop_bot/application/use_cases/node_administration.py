@@ -21,13 +21,13 @@ class NodeAdministration:
     sync_status: SyncNodeStatus
     secret_factory: Callable[[], str] = _generate_shared_secret
 
-    async def list_nodes(self) -> list[dict[str, Any]]:
+    async def list_nodes(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         async with self.uow_factory() as uow:
-            return [dict(row) for row in await uow.nodes.list_nodes()]
+            return [dict(row) for row in await uow.nodes.list_nodes(limit=limit, offset=offset)]
 
-    async def list_tasks(self) -> list[dict[str, Any]]:
+    async def list_tasks(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         async with self.uow_factory() as uow:
-            return [dict(row) for row in await uow.nodes.list_tasks()]
+            return [dict(row) for row in await uow.nodes.list_tasks(limit=limit, offset=offset)]
 
     async def create_node(
         self,

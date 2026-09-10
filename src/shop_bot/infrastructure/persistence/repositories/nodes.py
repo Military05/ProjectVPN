@@ -54,7 +54,7 @@ class NodeRepository:
                 selection_weight=selection_weight,
                 status=status,
             )
-            .on_conflict_do_nothing()
+            .on_conflict_do_nothing(index_elements=[nodes.c.node_key])
             .returning(nodes)
         )
         row = result.mappings().first()

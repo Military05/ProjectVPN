@@ -9,16 +9,30 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from shop_bot.core.exceptions import ConflictError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from shop_bot.infrastructure.persistence.sqlalchemy.tables import node_status, nodes, server_endpoints, servers
+from shop_bot.infrastructure.persistence.sqlalchemy.tables import (
+    node_status,
+    nodes,
+    server_endpoints,
+    servers,
+)
 
 
 class ServerRepository:
     def __init__(self, connection: AsyncConnection) -> None:
         self.connection = connection
 
-    async def create_server(self, server_name: str, host: str, is_enabled: bool = True) -> Mapping[str, Any]:
+    async def create_server(
+        self,
+        server_name: str,
+        host: str,
+        is_enabled: bool = True,
+    ) -> Mapping[str, Any]:
+        # Both the name and host are independent conflict keys, so this statement
+        # intentionally has no single conflict target. CHECK/FK violations are
+        # still raised by PostgreSQL and are not converted into domain conflicts.
         result = await self.connection.execute(
-            pg_insert(servers).values(server_name=server_name, host=host, is_enabled=is_enabled)
+            pg_insert(servers)
+            .values(server_name=server_name, host=host, is_enabled=is_enabled)
             .on_conflict_do_nothing()
             .returning(servers.c.server_id)
         )
@@ -34,7 +48,12 @@ class ServerRepository:
         }
 
     async def create_server_endpoint(self, **payload: Any) -> Mapping[str, Any]:
-        result = await self.connection.execute(pg_insert(server_endpoints).values(**payload).on_conflict_do_nothing().returning(server_endpoints.c.server_endpoint_id))
+        result = await self.connection.execute(
+            pg_insert(server_endpoints)
+            .values(**payload)
+            .on_conflict_do_nothing(constraint="uq_server_endpoints_full_tuple")
+            .returning(server_endpoints.c.server_endpoint_id)
+        )
         row = result.first()
         if row is None:
             raise ConflictError("Server endpoint already exists")

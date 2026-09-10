@@ -15,7 +15,10 @@
 - Payment event lookup переведён на `(provider, event_key)` с rolling compatibility fallback; `PaymentAttempt.apply_provider_status()` стал monotonic и возвращает `APPLIED/DUPLICATE/STALE`; ProcessPayment перечитывает attempt после блокировки order.
 - Завершён `CHANGE-11`: admin API для subscriptions, VPN configurations, payment orders, nodes и node tasks принимает `limit=1..200`/`offset>=0` с backward-compatible defaults `100/0`, запрашивает у repository `limit + 1`, возвращает исходный `list[...]` и заголовки `X-Page-Limit`, `X-Page-Offset`, `X-Has-More` без `COUNT(*)`.
 - Все пять paginated repository-запросов имеют стабильную сортировку с primary-key tiebreaker; admin UI использует server-side страницы по 50 записей, переходы `offset ± 50`, состояние `has_more` из response headers и явно обозначает, что показана только текущая страница.
-- Создание node/server/endpoint/tariff использует DB arbitration через `ON CONFLICT DO NOTHING` и возвращает domain conflict вместо гонки pre-check → insert.
+- Реализация `CHANGE-12` доведена на уровне кода: создание tariff/server/node/endpoint использует DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`; для node и endpoint заданы точные conflict targets, а server намеренно учитывает оба независимых уникальных ключа — имя и host.
+- Пустой `RETURNING` преобразуется в domain `ConflictError` и HTTP 409; проигравший node INSERT не доходит до создания credential. Ошибки дочерней записи остаются внутри общей UoW-транзакции и откатывают родителя; `CHECK`/`FOREIGN KEY` не перехватываются как conflict.
+- Добавлены 10 быстрых regression-тестов SQL/API/use-case контракта и 6 настоящих PostgreSQL integration-сценариев: параллельные tariff/server/node/endpoint запросы, один credential победителя, `NULLS NOT DISTINCT`, rollback и немаскированные ограничения.
+- Добавлен пользовательский чек-лист `CHANGE12_CHECKLIST_RU.md` с изолированным PostgreSQL 16 стендом, командами тестов и ручной проверкой административной панели.
 - Redis оставлен disposable; Prometheus ограничен bind `127.0.0.1:9090`; добавлен отдельный Compose migrate job и schema assertion для worker/readiness.
 - Добавлен authenticated Node Agent journal retirement endpoint.
 - После schema assertion worker выполняет один bounded startup recovery pass (до 100 записей каждого типа): received payment events, stale/due node tasks, panel provision tasks и panel revoke tasks.
@@ -26,13 +29,17 @@
 ## Проверено
 
 - `python -m compileall -q src tests alembic` — успешно.
+- Целевые regression-тесты `CHANGE-12`: `10 passed`; совместно с тестами `CHANGE-11`: `28 passed`.
+- PostgreSQL-набор `CHANGE-12` корректно собирается, но в текущей среде дал `6 skipped`, поскольку здесь отсутствуют Docker и PostgreSQL. До запуска этих шести тестов на настоящем PostgreSQL пункт считается реализованным, но не полностью подтверждённым.
 - Целевые regression-тесты `CHANGE-11`: `18 passed` (HTTP defaults/bounds/body, API query contract, probe row/headers, application forwarding, repository window/stable ordering и UI contract).
 - `node --check` для admin UI JavaScript — успешно; `pip check` — зависимости согласованы.
-- Полный `pytest -q`: `183 passed, 34 failed`. До `CHANGE-11` тот же `main` давал `165 passed, 34 failed`; все 18 новых regression-тестов проходят, точный набор из 34 унаследованных падений не изменился.
+- Полный `pytest -q` после доступной части `CHANGE-12`: `193 passed, 34 failed, 6 skipped`. До `CHANGE-12` было `183 passed, 34 failed`; добавились 10 успешных unit-тестов, а точный набор из 34 унаследованных падений не изменился.
+- Свежая установка допустимых диапазонов выбрала FastAPI `0.141.1` и `prometheus-fastapi-instrumentator` `7.1.0`; унаследованный observability-конфликт с lazy `_IncludedRouter` может дать HTTP 500 до входа в admin route. Целевые CHANGE-12 тесты изолируют DB/API-контракт от этого middleware, но полный ручной UI acceptance требует закрыть dependency reproducibility (`CHANGE-08`).
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
 ## Осталось для следующего этапа
 
+- Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
 - Полностью довести cleanup-before-replacement для FAILED VPN operations и central journal retirement use case.
 - Завершить surgical reconciliation с maintenance lease и bounded anomaly batches.
 - Переключить active fake outbox code на audit log, сохранив compatibility tombstone.
@@ -45,6 +52,8 @@
 
 ## Что делать в следующем промпте
 
-Рекомендуемый следующий один пункт — полностью закрыть `CHANGE-12` (race-safe admin creation): проверить DB-authoritative создание tariff/server/node/endpoint и добавить конкурентный PostgreSQL-тест «один 201, один 409, ни одного 500», включая гарантию, что credential создаётся только для выигравшего node INSERT. Начинать с актуальной ветки `main`; `CHANGE-10`, `CHANGE-11`, `CHANGE-13` и выполненную targeted-часть `CHANGE-16` повторно не делать.
+Сначала выполнить на ноутбуке раздел «Вариант 1 — строгая автоматическая проверка» из `CHANGE12_CHECKLIST_RU.md` и прислать полный итог pytest. Если результат — `10 passed` для unit и `6 passed` для PostgreSQL integration без новых падений, отметить `CHANGE-12` полностью подтверждённым.
 
-После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `183 passed, 34 failed`.
+Следующий отдельный этап разработки после этого — `CHANGE-08`: создать hash-pinned runtime/dev/build lock-файлы, зафиксировать совместимые версии FastAPI/Prometheus и подтвердить чистую установку. Это нужно сделать до ручного end-to-end теста административной панели. Не повторять `CHANGE-10`, `CHANGE-11`, `CHANGE-12`, `CHANGE-13`, `CHANGE-14`, `CHANGE-15` и уже выполненную targeted-часть `CHANGE-16`.
+
+После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `193 passed, 34 failed, 6 skipped` (шесть skipped должны исчезнуть в среде с PostgreSQL).

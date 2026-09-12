@@ -155,39 +155,41 @@ Endpoints:
 Requires Python 3.12+, PostgreSQL and Redis.
 
 ```bash
-python -m pip install -e '.[dev]'
-alembic upgrade head
-shopbot-node-agent
-shopbot-api
-shopbot-worker
-shopbot-bot
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements/dev.lock
+.venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+.venv/bin/alembic upgrade head
+.venv/bin/shopbot-node-agent
+.venv/bin/shopbot-api
+.venv/bin/shopbot-worker
+.venv/bin/shopbot-bot
 ```
 
 ## Tests and checks
 
 ```bash
-pytest -q
-python -m compileall -q src tests
-pip install --no-build-isolation --no-deps -e .
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall -q src tests
+.venv/bin/python -m pip check
 ```
 
 The automated test suite covers type-annotation enforcement, domain state transitions, payment idempotency, paid subscription activation and refunds, persistence contracts, dependency boundaries, circular imports, API routes, webhook hardening, Node Agent routes, VLESS generation, node authentication, XUI integration boundaries and node runtime behavior.
 
-## Required production dependency reproducibility check
+## Reproducible dependencies
 
-The functional and security fixes in this archive are implemented, but the final reproducible dependency-lock step from **P20** is intentionally not completed in this build. Before treating an image as fully reproducible for production, generate and commit a Python 3.12 `requirements.lock` containing exact transitive versions and SHA256 hashes, then validate installation and the clean container build from that lock.
+`CHANGE-08` provides three Python 3.12 lock files under `requirements/`. Every package is pinned with `==` and SHA-256 hashes. The runtime lock fixes FastAPI at `0.136.3` with `prometheus-fastapi-instrumentator` `7.1.0`: FastAPI `0.137+` introduced lazy `_IncludedRouter` entries that this instrumentator version cannot inspect.
 
-Recommended mandatory validation in a clean Python 3.12 environment:
+Validate the development graph in a clean environment:
 
 ```bash
-python -m pip install 'pip-tools==7.5.1'
-pip-compile --generate-hashes --resolver=backtracking --output-file=requirements.lock pyproject.toml
-python -m pip install --require-hashes -r requirements.lock
-pytest -q
-python -m compileall -q src tests
+python3.12 -m venv .clean-venv
+.clean-venv/bin/python -m pip install --require-hashes -r requirements/dev.lock
+.clean-venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+.clean-venv/bin/python -m pip check
+.clean-venv/bin/python -m pytest -q
 docker compose build --no-cache
 ```
 
-The dependency-lock check is successful only when the lock file is generated from the intended Python 3.12 environment, every dependency hash verifies during installation, the full test suite passes, and a clean Docker/Compose build completes without resolving unpinned Python packages from the live package index. Do not report dependency reproducibility as verified until those checks have actually been executed.
+The Dockerfile installs `build.lock` and `runtime.lock` with `--require-hashes`, then installs the project with `--no-deps --no-build-isolation` and runs `pip check`. It never upgrades pip or resolves project dependency ranges during the image build. See [`requirements/README.md`](requirements/README.md) for the exact regeneration commands; they use `pip==25.2` and `pip-tools==7.5.1` because newer pip releases are incompatible with that pinned compiler.
 
 Detailed architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

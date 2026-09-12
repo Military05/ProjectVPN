@@ -18,6 +18,9 @@
 - Реализация `CHANGE-12` доведена на уровне кода: создание tariff/server/node/endpoint использует DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`; для node и endpoint заданы точные conflict targets, а server намеренно учитывает оба независимых уникальных ключа — имя и host.
 - Пустой `RETURNING` преобразуется в domain `ConflictError` и HTTP 409; проигравший node INSERT не доходит до создания credential. Ошибки дочерней записи остаются внутри общей UoW-транзакции и откатывают родителя; `CHECK`/`FOREIGN KEY` не перехватываются как conflict.
 - Добавлены 10 быстрых regression-тестов SQL/API/use-case контракта и 6 настоящих PostgreSQL integration-сценариев: параллельные tariff/server/node/endpoint запросы, один credential победителя, `NULLS NOT DISTINCT`, rollback и немаскированные ограничения.
+- Завершён `CHANGE-08` на уровне кода и чистой Python-установки: добавлены SHA-256 hash-pinned `requirements/runtime.lock`, `requirements/dev.lock` и `requirements/build.lock` для Python 3.12; dev-lock является точным надмножеством runtime-lock, а build-lock совпадает с `build-system.requires`.
+- Runtime зафиксирован на совместимой паре FastAPI `0.136.3` и `prometheus-fastapi-instrumentator` `7.1.0`; диапазон FastAPI ограничен `<0.137.0`, потому что ветка `0.137+` вводит lazy `_IncludedRouter`, который instrumentator `7.1.0` не умеет обрабатывать.
+- Dockerfile устанавливает только `build.lock` и `runtime.lock` с `--require-hashes`, затем проект с `--no-deps --no-build-isolation` и выполняет `pip check`; обновление pip и разрешение project dependency ranges во время image build удалены, digest Python 3.12 base image сохранён.
 - Добавлен пользовательский чек-лист `CHANGE12_CHECKLIST_RU.md` с изолированным PostgreSQL 16 стендом, командами тестов и ручной проверкой административной панели.
 - Redis оставлен disposable; Prometheus ограничен bind `127.0.0.1:9090`; добавлен отдельный Compose migrate job и schema assertion для worker/readiness.
 - Добавлен authenticated Node Agent journal retirement endpoint.
@@ -32,9 +35,12 @@
 - Целевые regression-тесты `CHANGE-12`: `10 passed`; совместно с тестами `CHANGE-11`: `28 passed`.
 - PostgreSQL-набор `CHANGE-12` корректно собирается, но в текущей среде дал `6 skipped`, поскольку здесь отсутствуют Docker и PostgreSQL. До запуска этих шести тестов на настоящем PostgreSQL пункт считается реализованным, но не полностью подтверждённым.
 - Целевые regression-тесты `CHANGE-11`: `18 passed` (HTTP defaults/bounds/body, API query contract, probe row/headers, application forwarding, repository window/stable ordering и UI contract).
+- Regression-тесты `CHANGE-08`: `5 passed` (точные pins/hashes всех lock-файлов, runtime ⊂ dev, build metadata, Dockerfile contract и живой FastAPI/Prometheus HTTP smoke).
 - `node --check` для admin UI JavaScript — успешно; `pip check` — зависимости согласованы.
-- Полный `pytest -q` после доступной части `CHANGE-12`: `193 passed, 34 failed, 6 skipped`. До `CHANGE-12` было `183 passed, 34 failed`; добавились 10 успешных unit-тестов, а точный набор из 34 унаследованных падений не изменился.
-- Свежая установка допустимых диапазонов выбрала FastAPI `0.141.1` и `prometheus-fastapi-instrumentator` `7.1.0`; унаследованный observability-конфликт с lazy `_IncludedRouter` может дать HTTP 500 до входа в admin route. Целевые CHANGE-12 тесты изолируют DB/API-контракт от этого middleware, но полный ручной UI acceptance требует закрыть dependency reproducibility (`CHANGE-08`).
+- Чистая установка `build.lock` + `runtime.lock` с `--require-hashes`, установка проекта без dependency resolution и `pip check` — успешно; `GET /health/live` вернул `200`, `_IncludedRouter` в маршрутах отсутствует.
+- Чистая установка `dev.lock` с `--require-hashes` и целевой pytest-набор — успешно.
+- Полный `pytest -q` после `CHANGE-08`: `198 passed, 34 failed, 6 skipped`. По сравнению с baseline после `CHANGE-12` добавились пять новых успешных тестов; точный набор из 34 унаследованных падений не изменился.
+- В текущей среде нет Docker CLI, поэтому реальный `docker compose build --no-cache` здесь не запускался; Dockerfile contract проверен автоматическим тестом, но clean image acceptance нужно выполнить на ноутбуке.
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
 ## Осталось для следующего этапа
@@ -44,7 +50,7 @@
 - Завершить surgical reconciliation с maintenance lease и bounded anomaly batches.
 - Переключить active fake outbox code на audit log, сохранив compatibility tombstone.
 - Завершить locking/capacity reservation в каждом production writer и panel equivalent.
-- Сгенерировать настоящие hash-pinned runtime/dev/build lock-файлы и выполнить clean install/pytest acceptance gate.
+- Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
 - Выполнить integration tests на PostgreSQL/Redis и проверить upgrade path 0006→0007→0008→0009.
 - Исправить 34 унаследованных падения полного набора тестов перед production acceptance gate.
 
@@ -52,8 +58,8 @@
 
 ## Что делать в следующем промпте
 
-Сначала выполнить на ноутбуке раздел «Вариант 1 — строгая автоматическая проверка» из `CHANGE12_CHECKLIST_RU.md` и прислать полный итог pytest. Если результат — `10 passed` для unit и `6 passed` для PostgreSQL integration без новых падений, отметить `CHANGE-12` полностью подтверждённым.
+Сначала выполнить на ноутбуке `docker compose build --no-cache`, поднять стенд и проверить `GET /health/live` и `/admin-ui`; затем запустить раздел «Вариант 1 — строгая автоматическая проверка» из `CHANGE12_CHECKLIST_RU.md`. Ожидается отсутствие `_IncludedRouter`, `10 passed` для unit и `6 passed` для PostgreSQL integration без `skipped`.
 
-Следующий отдельный этап разработки после этого — `CHANGE-08`: создать hash-pinned runtime/dev/build lock-файлы, зафиксировать совместимые версии FastAPI/Prometheus и подтвердить чистую установку. Это нужно сделать до ручного end-to-end теста административной панели. Не повторять `CHANGE-10`, `CHANGE-11`, `CHANGE-12`, `CHANGE-13`, `CHANGE-14`, `CHANGE-15` и уже выполненную targeted-часть `CHANGE-16`.
+Следующий отдельный этап разработки — выполнить только `CHANGE-04`: полностью довести physical VPN operation identity и cleanup-before-replacement state machine до начала нового reconciliation. Не повторять `CHANGE-08`, `CHANGE-10`, `CHANGE-11`, `CHANGE-12`, `CHANGE-13`, `CHANGE-14`, `CHANGE-15` и уже выполненную targeted-часть `CHANGE-16`.
 
-После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `193 passed, 34 failed, 6 skipped` (шесть skipped должны исчезнуть в среде с PostgreSQL).
+После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `198 passed, 34 failed, 6 skipped` (шесть skipped должны исчезнуть в среде с PostgreSQL).

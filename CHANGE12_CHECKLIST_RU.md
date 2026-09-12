@@ -10,30 +10,21 @@
 - Пустой `RETURNING` преобразуется в domain `ConflictError`, а API-контракт — в
   HTTP `409`.
 - Быстрые тесты CHANGE-12: `10 passed`.
-- Полный набор в среде разработки: `193 passed, 34 failed, 6 skipped`.
+- Полный набор после `CHANGE-08`: `198 passed, 34 failed, 6 skipped`.
 - Те же 34 падения уже существовали до CHANGE-12; десять новых unit-тестов прошли.
 - Шесть тестов, помеченных `postgresql`, здесь пропущены только из-за отсутствия
   Docker/PostgreSQL. Именно их нужно запустить на ноутбуке по инструкции ниже.
 
-### Известный унаследованный блокер полного UI-теста
+### Блокер полного UI-теста устранён в CHANGE-08
 
-При свежем разрешении диапазонов из `pyproject.toml` в текущей среде установились
-FastAPI `0.141.1` и `prometheus-fastapi-instrumentator` `7.1.0`. Эта комбинация
-может завершить запрос до административного маршрута ошибкой
-`AttributeError: '_IncludedRouter' object has no attribute 'path'`.
+Runtime-lock фиксирует совместимую пару FastAPI `0.136.3` и
+`prometheus-fastapi-instrumentator` `7.1.0`. Чистая установка по SHA-256-хешам и
+запрос `GET /health/live` проверены: HTTP `200`, lazy `_IncludedRouter` отсутствует.
 
-Это одна из старых проблем текущего checkpoint, а не регрессия CHANGE-12. Целевые
-integration-тесты из этого файла используют настоящие административные маршруты,
-UoW, PostgreSQL и production-обработчик `ConflictError`, но изолируют их от
-не относящегося к CHANGE-12 middleware наблюдаемости.
-
-Если такая ошибка появилась при ручном запуске панели:
-
-1. сохраните полный вывод `docker compose ... logs api`;
-2. всё равно выполните строгие PostgreSQL-тесты из варианта 1;
-3. не отмечайте полный end-to-end UI acceptance завершённым;
-4. следующим этапом выполните `CHANGE-08` — зафиксируйте проверенный dependency
-   graph и устраните эту несовместимость воспроизводимым способом.
+Если старая ошибка `_IncludedRouter` всё ещё появляется на ноутбуке, сначала
+получите актуальный `main`, удалите старые контейнеры этого тестового проекта и
+пересоберите образы без кэша. Не устанавливайте зависимости напрямую из диапазонов
+`pyproject.toml`.
 
 ## Что должно быть гарантировано
 
@@ -104,8 +95,9 @@ python3 --version
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pip install --require-hashes -r requirements/dev.lock
+.venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+.venv/bin/python -m pip check
 ```
 
 ### 4. Запустить отдельный PostgreSQL только для теста CHANGE-12
@@ -228,8 +220,8 @@ curl -i http://localhost:8080/health/live
 ```
 
 Ожидается HTTP `200` от health endpoint и успешно завершённый контейнер `migrate`.
-Если вместо этого API пишет ошибку `_IncludedRouter`, смотрите предупреждение об
-унаследованном блокере выше; не пытайтесь скрывать её перезапусками.
+Если API всё ещё пишет ошибку `_IncludedRouter`, убедитесь, что образ действительно
+пересобран из актуального `main` с `requirements/runtime.lock`.
 
 ### 3. Открыть панель
 

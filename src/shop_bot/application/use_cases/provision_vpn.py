@@ -8,10 +8,15 @@ from uuid import uuid4
 
 from shop_bot.application.job_names import JobName
 from shop_bot.application.ports import JobQueue, UnitOfWorkFactory
+from shop_bot.application.revoke_reason import VpnRevokeReason
 from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.panel_task import PanelProvisionTask, PanelProvisionTaskStatus
 from shop_bot.domain.entities.subscription import Subscription
-from shop_bot.domain.entities.vpn import VpnConfiguration, VpnConfigurationStatus
+from shop_bot.domain.entities.vpn import (
+    VpnConfiguration,
+    VpnConfigurationStatus,
+    VpnDesiredState,
+)
 from shop_bot.domain.repositories.interfaces import UnitOfWork
 from shop_bot.domain.services.vpn_provisioning import VpnEndpoint, VpnProvisioningService
 from shop_bot.domain.services.node_selection import NodeAvailabilityPolicy, NodeSelectionCandidate, WeightedNodeSelector
@@ -24,6 +29,18 @@ class ProvisionPlan:
     node_task_id: int | None = None
     panel_task_id: int | None = None
     should_enqueue: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionCleanupPlan:
+    subscription_id: int
+    vpn_configuration_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionRecoveryPlan:
+    subscription_id: int
+    vpn_configuration_id: int
 
 
 @dataclass(slots=True)
@@ -41,6 +58,22 @@ class ProvisionVpn:
 
     async def execute(self, *, subscription_id: int) -> dict[str, str | int]:
         plan = await self._prepare_plan(subscription_id)
+        if isinstance(plan, ProvisionCleanupPlan):
+            await self.job_queue.enqueue(
+                JobName.REVOKE_VPN_CONFIGURATION,
+                plan.vpn_configuration_id,
+                VpnRevokeReason.REPLACEMENT_CLEANUP.value,
+            )
+            return {
+                "status": "cleanup_required",
+                "vpn_configuration_id": plan.vpn_configuration_id,
+            }
+        if isinstance(plan, ProvisionRecoveryPlan):
+            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
+            return {
+                "status": "active",
+                "vpn_configuration_id": plan.vpn_configuration_id,
+            }
         if isinstance(plan, dict):
             return plan
         if plan.node_task_id is not None:
@@ -61,7 +94,9 @@ class ProvisionVpn:
             }
         raise RuntimeError("Provisioning path was not selected")
 
-    async def _prepare_plan(self, subscription_id: int) -> ProvisionPlan | dict[str, str | int]:
+    async def _prepare_plan(
+        self, subscription_id: int
+    ) -> ProvisionPlan | ProvisionCleanupPlan | ProvisionRecoveryPlan | dict[str, str | int]:
         async with self.uow_factory() as uow:
             subscription = await uow.subscriptions.get_entity(subscription_id, for_update=True)
             early_result = self._subscription_result(subscription, subscription_id)
@@ -82,17 +117,20 @@ class ProvisionVpn:
                 VpnConfigurationStatus.REVOKE_FAILED,
             }:
                 return {"status": str(latest.status), "vpn_configuration_id": int(latest.id)}
+            if latest is not None and latest.status is VpnConfigurationStatus.FAILED:
+                if latest.id is None:
+                    raise RuntimeError("Persisted VPN configuration has no id")
+                return ProvisionCleanupPlan(
+                    subscription_id=subscription_id,
+                    vpn_configuration_id=latest.id,
+                )
             if latest is not None and latest.status is VpnConfigurationStatus.PROVISIONING:
-                reused = await self._reuse_existing_provisioning(
+                return await self._reuse_existing_provisioning(
                     uow,
                     latest=latest,
                     expires_at=period.expires_at,
                     now=now,
                 )
-                if reused is not None:
-                    return reused
-                latest.fail_provisioning()
-                await uow.vpn.save_entity(latest)
 
             endpoint_row = await self._select_endpoint(uow, now)
             if endpoint_row is None:
@@ -176,9 +214,14 @@ class ProvisionVpn:
         latest: VpnConfiguration,
         expires_at: datetime,
         now: datetime,
-    ) -> ProvisionPlan | dict[str, str | int] | None:
+    ) -> ProvisionPlan | ProvisionCleanupPlan | ProvisionRecoveryPlan:
         if latest.id is None:
             raise RuntimeError("Persisted VPN configuration has no id")
+        if latest.desired_state is not VpnDesiredState.ACTIVE:
+            return ProvisionCleanupPlan(
+                subscription_id=latest.subscription_id,
+                vpn_configuration_id=latest.id,
+            )
         config_row = await uow.vpn.get_configuration_with_endpoint(latest.id)
         if config_row is None:
             raise RuntimeError("Failed to load existing provisioning configuration")
@@ -198,8 +241,17 @@ class ProvisionVpn:
                     expires_at=expires_at,
                     now=now,
                 )
+            elif task.status is NodeTaskStatus.SUCCEEDED:
+                return await self._recover_succeeded_provision(
+                    uow,
+                    configuration=latest,
+                    remote_client_ref=task.remote_client_ref,
+                )
             elif task.status in {NodeTaskStatus.FAILED, NodeTaskStatus.CANCELLED}:
-                return {"status": "cleanup_required", "vpn_configuration_id": latest.id}
+                return ProvisionCleanupPlan(
+                    subscription_id=latest.subscription_id,
+                    vpn_configuration_id=latest.id,
+                )
             if task.id is None:
                 raise RuntimeError("Existing node task has no id")
             return ProvisionPlan(
@@ -218,15 +270,51 @@ class ProvisionVpn:
                 expires_at=expires_at,
                 now=now,
             )
+        elif task.status is PanelProvisionTaskStatus.SUCCEEDED:
+            return await self._recover_succeeded_provision(
+                uow,
+                configuration=latest,
+            )
+        elif task.status in {
+            PanelProvisionTaskStatus.FAILED,
+            PanelProvisionTaskStatus.CANCELLED,
+        }:
+            return ProvisionCleanupPlan(
+                subscription_id=latest.subscription_id,
+                vpn_configuration_id=latest.id,
+            )
         if task.id is None:
             raise RuntimeError("Existing panel provision task has no id")
-        if task.status is PanelProvisionTaskStatus.FAILED:
-            return None
         return ProvisionPlan(
             subscription_id=latest.subscription_id,
             vpn_configuration_id=latest.id,
             panel_task_id=task.id,
             should_enqueue=task.status is PanelProvisionTaskStatus.PENDING,
+        )
+
+    @staticmethod
+    async def _recover_succeeded_provision(
+        uow: UnitOfWork,
+        *,
+        configuration: VpnConfiguration,
+        remote_client_ref: str | None = None,
+    ) -> ProvisionRecoveryPlan:
+        if configuration.id is None:
+            raise RuntimeError("Persisted VPN configuration has no id")
+        configuration.activate(remote_client_ref)
+        await uow.vpn.save_entity(configuration)
+        await uow.payments.create_outbox_event(
+            event_name="vpn_configuration_activated",
+            aggregate_type="vpn_configuration",
+            aggregate_id=configuration.id,
+            payload={
+                "vpn_configuration_id": configuration.id,
+                "subscription_id": configuration.subscription_id,
+            },
+        )
+        return ProvisionRecoveryPlan(
+            subscription_id=configuration.subscription_id,
+            vpn_configuration_id=configuration.id,
         )
 
     @staticmethod

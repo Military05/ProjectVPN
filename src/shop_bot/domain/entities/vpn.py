@@ -71,15 +71,18 @@ class VpnConfiguration:
     def cancel_provisioning_for_revoke(self) -> None:
         if self.status is not VpnConfigurationStatus.PROVISIONING:
             raise InvalidStateTransition("Only provisioning VPN can be cancelled for revoke")
-        self.status = VpnConfigurationStatus.FAILED
         self.desired_state = VpnDesiredState.REVOKED
         self.generation += 1
+        self.status = VpnConfigurationStatus.REVOKING
+        self.revoked_at = None
 
     def request_cleanup_from_failed(self) -> None:
         if self.status is not VpnConfigurationStatus.FAILED:
             raise InvalidStateTransition("Only failed VPN can request cleanup")
         self.desired_state = VpnDesiredState.REVOKED
         self.generation += 1
+        self.status = VpnConfigurationStatus.REVOKING
+        self.revoked_at = None
 
     def revoke(self, now: datetime) -> None:
         if self.status is not VpnConfigurationStatus.REVOKING:

@@ -285,7 +285,10 @@ class NodeRepository:
                 max_attempts=max_attempts,
                 next_retry_at=next_retry_at or datetime.now(UTC),
             )
-            .on_conflict_do_nothing(index_elements=[node_tasks.c.idempotency_key])
+            # Either the transport idempotency key or the physical VPN operation
+            # tuple may win a concurrent insert. Both conflicts must converge on
+            # the already persisted task instead of minting another identity.
+            .on_conflict_do_nothing()
             .returning(node_tasks)
         )
         result = await self.connection.execute(statement)
@@ -293,9 +296,17 @@ class NodeRepository:
         if row is not None:
             return row
         existing = await self.get_task_by_idempotency(idempotency_key)
-        if existing is None:
-            raise RuntimeError("Failed to create node task")
-        return existing
+        if existing is not None:
+            return existing
+        if vpn_configuration_id is not None and vpn_generation is not None:
+            existing = await self._get_vpn_task_row_for_generation(
+                vpn_configuration_id,
+                operation,
+                vpn_generation,
+            )
+            if existing is not None:
+                return existing
+        raise RuntimeError("Failed to create node task")
 
     async def get_task_by_idempotency(self, idempotency_key: str) -> Mapping[str, Any] | None:
         result = await self.connection.execute(
@@ -316,19 +327,30 @@ class NodeRepository:
         operation: str,
         vpn_generation: int,
     ) -> NodeTask | None:
+        row = await self._get_vpn_task_row_for_generation(
+            vpn_configuration_id,
+            operation,
+            vpn_generation,
+        )
+        return node_task_from_row(row) if row is not None else None
+
+    async def _get_vpn_task_row_for_generation(
+        self,
+        vpn_configuration_id: int,
+        operation: str,
+        vpn_generation: int,
+    ) -> Mapping[str, Any] | None:
         result = await self.connection.execute(
             select(node_tasks)
             .where(
                 node_tasks.c.vpn_configuration_id == vpn_configuration_id,
                 node_tasks.c.operation == operation,
                 node_tasks.c.vpn_generation == vpn_generation,
-                node_tasks.c.status.in_(("pending", "in_progress", "succeeded", "failed", "cancelled")),
             )
             .order_by(node_tasks.c.node_task_id.desc())
             .limit(1)
         )
-        row = result.mappings().first()
-        return node_task_from_row(row) if row is not None else None
+        return result.mappings().first()
 
     async def list_tasks(self, limit: int = 100, offset: int = 0) -> list[Mapping[str, Any]]:
         result = await self.connection.execute(

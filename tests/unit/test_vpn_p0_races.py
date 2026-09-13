@@ -140,7 +140,6 @@ class Nodes:
                 task.vpn_configuration_id == vpn_configuration_id
                 and str(task.operation) == operation
                 and task.vpn_generation == vpn_generation
-                and task.status in {NodeTaskStatus.PENDING, NodeTaskStatus.IN_PROGRESS}
             ):
                 return task
         return None
@@ -329,7 +328,7 @@ async def test_force_retry_after_failed_panel_cleanup_starts_fresh_generation_an
 
     assert result["status"] == "queued"
     assert result["panel_task_id"] == 2
-    assert state.config.status is VpnConfigurationStatus.FAILED
+    assert state.config.status is VpnConfigurationStatus.REVOKING
     assert state.config.desired_state is VpnDesiredState.REVOKED
     assert state.config.generation == 3
     assert len(state.panel_tasks) == 2
@@ -339,6 +338,43 @@ async def test_force_retry_after_failed_panel_cleanup_starts_fresh_generation_an
     assert fresh_task.idempotency_key != failed_task.idempotency_key
     assert fresh_task.task_uuid != failed_task.task_uuid
     assert queue.jobs == [(JobName.DISPATCH_PANEL_REVOKE_TASK, (2,))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_id", [5, None])
+async def test_replacement_cleanup_keeps_failed_client_on_original_endpoint(
+    node_id: int | None,
+) -> None:
+    state = State(node_id=node_id)
+    state.config.status = VpnConfigurationStatus.FAILED
+    state.config.desired_state = VpnDesiredState.ACTIVE
+    queue = Queue()
+
+    result = await revoke_case(state, queue).execute(
+        vpn_configuration_id=7,
+        reason=VpnRevokeReason.REPLACEMENT_CLEANUP,
+    )
+
+    assert result["status"] == "queued"
+    assert state.config.status is VpnConfigurationStatus.REVOKING
+    assert state.config.desired_state is VpnDesiredState.REVOKED
+    assert state.config.generation == 2
+    if node_id is not None:
+        assert len(state.node_tasks) == 1
+        task = state.node_tasks[0]
+        assert task.node_id == node_id
+        assert task.operation is NodeTaskOperation.REVOKE_CLIENT
+        assert task.vpn_generation == 2
+        assert task.payload["client_uuid"] == str(CLIENT_UUID)
+        assert task.payload["inbound_id"] == "main-vless"
+    else:
+        assert len(state.panel_tasks) == 1
+        task = state.panel_tasks[0]
+        assert task.vpn_generation == 2
+        assert task.payload == {
+            "xui_inbound_id": "main-vless",
+            "client_uuid": str(CLIENT_UUID),
+        }
 
 
 @pytest.mark.asyncio

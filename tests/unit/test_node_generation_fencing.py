@@ -181,7 +181,7 @@ async def test_paid_period_disappears_during_current_provision_cancels_and_clean
     )
 
     assert state.lock_order == ["subscription", "vpn"]
-    assert state.config.status is VpnConfigurationStatus.FAILED
+    assert state.config.status is VpnConfigurationStatus.REVOKING
     assert state.config.desired_state is VpnDesiredState.REVOKED
     assert state.config.generation == 2
     assert result.follow_up_task_id == 100

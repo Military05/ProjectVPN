@@ -9,9 +9,10 @@ from uuid import UUID
 import pytest
 
 from shop_bot.application.job_names import JobName
+from shop_bot.application.revoke_reason import VpnRevokeReason
 from shop_bot.application.use_cases.dispatch_panel_provision_task import DispatchPanelProvisionTask
 from shop_bot.application.use_cases.provision_vpn import ProvisionVpn
-from shop_bot.domain.entities.node import NodeTask
+from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.panel_task import PanelProvisionTask, PanelProvisionTaskStatus
 from shop_bot.domain.entities.subscription import Subscription, SubscriptionPeriod, SubscriptionStatus
 from shop_bot.domain.entities.vpn import VpnConfiguration, VpnConfigurationStatus, VpnDesiredState
@@ -60,6 +61,7 @@ class ProvisionState:
         self.release_first = asyncio.Event()
         self.block_first = False
         self.get_for_update: list[bool] = []
+        self.endpoint_selection_calls = 0
 
 
 class ProvisionSubscriptions:
@@ -147,6 +149,7 @@ class ProvisionServers:
         self.state = state
 
     async def get_first_enabled_endpoint(self) -> dict[str, Any]:
+        self.state.endpoint_selection_calls += 1
         return self.state.endpoint
 
 
@@ -191,6 +194,65 @@ def provision_use_case(state: ProvisionState, queue: Queue) -> ProvisionVpn:
     )
 
 
+def seed_configuration(
+    state: ProvisionState,
+    *,
+    status: VpnConfigurationStatus = VpnConfigurationStatus.PROVISIONING,
+    desired_state: VpnDesiredState = VpnDesiredState.ACTIVE,
+    generation: int = 1,
+) -> VpnConfiguration:
+    configuration = VpnConfiguration(
+        id=1,
+        subscription_id=1,
+        server_endpoint_id=7,
+        client_uuid=CLIENT_UUID,
+        display_name="vpn-1",
+        status=status,
+        desired_state=desired_state,
+        generation=generation,
+    )
+    state.configs.append(configuration)
+    return configuration
+
+
+def seed_provision_task(
+    state: ProvisionState,
+    status: str,
+) -> NodeTask | PanelProvisionTask:
+    if state.endpoint["node_id"] is not None:
+        task = NodeTask(
+            id=41,
+            task_uuid=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            node_id=int(state.endpoint["node_id"]),
+            operation=NodeTaskOperation.PROVISION_CLIENT,
+            status=NodeTaskStatus(status),
+            idempotency_key="provision-existing-generation-1",
+            payload={
+                "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "idempotency_key": "provision-existing-generation-1",
+                "client_uuid": str(CLIENT_UUID),
+                "inbound_id": "main-vless",
+            },
+            vpn_configuration_id=1,
+            subscription_id=1,
+            vpn_generation=1,
+            remote_client_ref="remote-client-1" if status == "succeeded" else None,
+        )
+        state.node_tasks[task.idempotency_key] = task
+        return task
+    task = PanelProvisionTask(
+        id=42,
+        vpn_configuration_id=1,
+        subscription_id=1,
+        status=PanelProvisionTaskStatus(status),
+        idempotency_key="panel-provision:vpn_configuration:1",
+        payload={"xui_inbound_id": 1, "client_uuid": str(CLIENT_UUID)},
+        vpn_generation=1,
+    )
+    state.panel_tasks[1] = task
+    return task
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("node_id", [5, None])
 async def test_concurrent_provisioning_serializes_subscription_and_creates_one_config_task(node_id: int | None) -> None:
@@ -220,6 +282,162 @@ async def test_concurrent_provisioning_serializes_subscription_and_creates_one_c
         task = next(iter(state.panel_tasks.values()))
         assert task.payload["client_uuid"] == str(CLIENT_UUID)
         assert all(job[0] == JobName.DISPATCH_PANEL_PROVISION_TASK for job in queue.jobs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_id", [5, None])
+@pytest.mark.parametrize("task_status", ["pending", "in_progress"])
+async def test_existing_nonterminal_provision_operation_is_reused_without_new_identity(
+    node_id: int | None,
+    task_status: str,
+) -> None:
+    state = ProvisionState(node_id=node_id)
+    seed_configuration(state)
+    task = seed_provision_task(state, task_status)
+    queue = Queue()
+
+    result = await provision_use_case(state, queue).execute(subscription_id=1)
+
+    assert result["vpn_configuration_id"] == 1
+    assert len(state.configs) == 1
+    assert state.endpoint_selection_calls == 0
+    assert len(state.node_tasks) + len(state.panel_tasks) == 1
+    if node_id is not None:
+        assert result["node_task_id"] == task.id
+        expected_job = (JobName.DISPATCH_NODE_TASK, (task.id,))
+    else:
+        assert result["panel_task_id"] == task.id
+        expected_job = (JobName.DISPATCH_PANEL_PROVISION_TASK, (task.id,))
+    assert queue.jobs == ([expected_job] if task_status == "pending" else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_id", [5, None])
+async def test_succeeded_provision_operation_recovers_locally_without_remote_replay(
+    node_id: int | None,
+) -> None:
+    state = ProvisionState(node_id=node_id)
+    configuration = seed_configuration(state)
+    seed_provision_task(state, "succeeded")
+    queue = Queue()
+    use_case = provision_use_case(state, queue)
+
+    first = await use_case.execute(subscription_id=1)
+    second = await use_case.execute(subscription_id=1)
+
+    assert first == second == {"status": "active", "vpn_configuration_id": 1}
+    assert configuration.status is VpnConfigurationStatus.ACTIVE
+    assert configuration.remote_client_ref == (
+        "remote-client-1" if node_id is not None else None
+    )
+    assert state.endpoint_selection_calls == 0
+    assert len(state.node_tasks) + len(state.panel_tasks) == 1
+    assert [event["event_name"] for event in state.outbox] == [
+        "vpn_configuration_activated"
+    ]
+    assert queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_id", [5, None])
+@pytest.mark.parametrize("task_status", ["failed", "cancelled"])
+async def test_terminal_failed_provision_operation_queues_cleanup_without_new_identity(
+    node_id: int | None,
+    task_status: str,
+) -> None:
+    state = ProvisionState(node_id=node_id)
+    configuration = seed_configuration(state)
+    original_task = seed_provision_task(state, task_status)
+    queue = Queue()
+
+    result = await provision_use_case(state, queue).execute(subscription_id=1)
+
+    assert result == {"status": "cleanup_required", "vpn_configuration_id": 1}
+    assert configuration.status is VpnConfigurationStatus.PROVISIONING
+    assert configuration.desired_state is VpnDesiredState.ACTIVE
+    assert configuration.generation == 1
+    assert state.endpoint_selection_calls == 0
+    assert len(state.configs) == 1
+    assert len(state.node_tasks) + len(state.panel_tasks) == 1
+    stored_task = (
+        next(iter(state.node_tasks.values()))
+        if node_id is not None
+        else next(iter(state.panel_tasks.values()))
+    )
+    assert stored_task is original_task
+    assert queue.jobs == [
+        (
+            JobName.REVOKE_VPN_CONFIGURATION,
+            (1, VpnRevokeReason.REPLACEMENT_CLEANUP.value),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_id", [5, None])
+async def test_failed_configuration_must_cleanup_before_endpoint_reselection(
+    node_id: int | None,
+) -> None:
+    state = ProvisionState(node_id=node_id)
+    configuration = seed_configuration(
+        state,
+        status=VpnConfigurationStatus.FAILED,
+    )
+    seed_provision_task(state, "failed")
+    queue = Queue()
+    use_case = provision_use_case(state, queue)
+
+    first = await use_case.execute(subscription_id=1)
+    second = await use_case.execute(subscription_id=1)
+
+    assert first == second == {"status": "cleanup_required", "vpn_configuration_id": 1}
+    assert configuration.status is VpnConfigurationStatus.FAILED
+    assert configuration.desired_state is VpnDesiredState.ACTIVE
+    assert configuration.generation == 1
+    assert state.endpoint_selection_calls == 0
+    assert len(state.configs) == 1
+    assert len(state.node_tasks) + len(state.panel_tasks) == 1
+    assert queue.jobs == [
+        (
+            JobName.REVOKE_VPN_CONFIGURATION,
+            (1, VpnRevokeReason.REPLACEMENT_CLEANUP.value),
+        ),
+        (
+            JobName.REVOKE_VPN_CONFIGURATION,
+            (1, VpnRevokeReason.REPLACEMENT_CLEANUP.value),
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_id", [5, None])
+async def test_replacement_is_created_only_after_cleanup_reaches_revoked(
+    node_id: int | None,
+) -> None:
+    state = ProvisionState(node_id=node_id)
+    old_configuration = seed_configuration(
+        state,
+        status=VpnConfigurationStatus.FAILED,
+    )
+    seed_provision_task(state, "failed")
+    queue = Queue()
+    use_case = provision_use_case(state, queue)
+
+    blocked = await use_case.execute(subscription_id=1)
+    assert blocked == {"status": "cleanup_required", "vpn_configuration_id": 1}
+    assert len(state.configs) == 1
+    assert state.endpoint_selection_calls == 0
+
+    old_configuration.request_cleanup_from_failed()
+    old_configuration.revoke(NOW)
+    replacement = await use_case.execute(subscription_id=1)
+
+    assert replacement["status"] == "queued"
+    assert replacement["vpn_configuration_id"] == 2
+    assert old_configuration.status is VpnConfigurationStatus.REVOKED
+    assert state.configs[1].status is VpnConfigurationStatus.PROVISIONING
+    assert state.endpoint_selection_calls == 1
+    assert len(state.node_tasks) + len(state.panel_tasks) == 2
 
 
 class DispatchState:
@@ -421,14 +639,19 @@ async def test_access_expiring_during_remote_provision_is_compensated_and_never_
     state = DispatchState()
     gateway = PanelGatewaySpy(state)
     gateway.expire_during_provision = True
-    result = await dispatcher(state, gateway).execute(panel_task_id=11)
+    queue = Queue()
+    result = await dispatcher(state, gateway, queue).execute(panel_task_id=11)
     assert result["status"] == "cancelled"
     assert len(gateway.provisions) == 1
     assert len(gateway.revokes) == 1
-    assert state.configuration.status is VpnConfigurationStatus.FAILED
+    assert state.configuration.status is VpnConfigurationStatus.REVOKED
     assert state.configuration.desired_state is VpnDesiredState.REVOKED
     assert state.configuration.generation == 2
     assert state.task.status is PanelProvisionTaskStatus.CANCELLED
+    assert [event["event_name"] for event in state.outbox] == [
+        "vpn_configuration_revoked"
+    ]
+    assert queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
 
 
 @pytest.mark.asyncio

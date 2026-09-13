@@ -265,7 +265,8 @@ async def test_reaper_recovers_crash_window_and_recovered_task_can_succeed() -> 
     assert current.status == "provisioned"
     assert repo.task.status is NodeTaskStatus.SUCCEEDED
     assert repo.task.lease_token is None
-    assert repo.touch_success_calls == 1
+    # A recovered business operation must not masquerade as a node-health probe.
+    assert repo.touch_success_calls == 0
     assert gateway.idempotency_keys == []
 
 

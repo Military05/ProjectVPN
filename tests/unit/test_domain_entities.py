@@ -212,6 +212,13 @@ def test_vpn_deliberate_recovery_changes_generation_explicitly() -> None:
 
     provisioning = _vpn()
     provisioning.cancel_provisioning_for_revoke()
-    assert provisioning.status is VpnConfigurationStatus.FAILED
+    assert provisioning.status is VpnConfigurationStatus.REVOKING
     assert str(provisioning.desired_state) == "revoked"
     assert provisioning.generation == 2
+
+    failed = _vpn()
+    failed.fail_provisioning()
+    failed.request_cleanup_from_failed()
+    assert failed.status is VpnConfigurationStatus.REVOKING
+    assert str(failed.desired_state) == "revoked"
+    assert failed.generation == 2

@@ -153,7 +153,13 @@ def make_request(*, body: bytes, path: str, journal: NodeOperationJournal, runti
         delivered = True
         return {"type": "http.request", "body": body, "more_body": False}
 
-    app = SimpleNamespace(state=SimpleNamespace(operation_journal=journal, runtime=runtime))
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            operation_journal=journal,
+            runtime=runtime,
+            settings=SimpleNamespace(node_agent_runtime_mode="stub"),
+        )
+    )
     return Request(
         {
             "type": "http",

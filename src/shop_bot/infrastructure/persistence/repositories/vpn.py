@@ -321,7 +321,7 @@ class VpnRepository:
 
     async def add_panel_revoke_task_entity(self, task: PanelRevokeTask) -> PanelRevokeTask:
         result = await self.connection.execute(
-            panel_revoke_tasks.insert()
+            pg_insert(panel_revoke_tasks)
             .values(
                 task_uuid=task.task_uuid,
                 vpn_configuration_id=task.vpn_configuration_id,
@@ -339,11 +339,23 @@ class VpnRepository:
                 lease_token=task.lease_token,
                 completed_at=task.completed_at,
             )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    panel_revoke_tasks.c.vpn_configuration_id,
+                    panel_revoke_tasks.c.vpn_generation,
+                ]
+            )
             .returning(panel_revoke_tasks)
         )
         row = result.mappings().first()
         if row is None:
-            raise RuntimeError("Failed to persist panel revoke task")
+            existing = await self.get_panel_revoke_task_for_generation(
+                task.vpn_configuration_id,
+                task.vpn_generation,
+            )
+            if existing is None:
+                raise RuntimeError("Failed to persist panel revoke task")
+            return existing
         return panel_revoke_task_from_row(row)
 
     async def save_panel_revoke_task_entity(self, task: PanelRevokeTask) -> None:

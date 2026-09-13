@@ -13,6 +13,11 @@
 - Добавлена базовая node selection policy с freshness, health, capacity и weighted random selection.
 - Health sync переведён на bounded worker pool, per-node completion timestamp и probe token fencing; успешные task operations больше не меняют node health.
 - Payment event lookup переведён на `(provider, event_key)` с rolling compatibility fallback; `PaymentAttempt.apply_provider_status()` стал monotonic и возвращает `APPLIED/DUPLICATE/STALE`; ProcessPayment перечитывает attempt после блокировки order.
+- Завершён `CHANGE-04`: физическая Node VPN operation однозначно определяется кортежем `(vpn_configuration_id, operation, vpn_generation)`, а panel revoke — `(vpn_configuration_id, vpn_generation)`; точные unique indexes уже находятся в expand-миграции `0007` и SQLAlchemy metadata.
+- Node и panel repositories используют DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`: если параллельная запись выиграла с другим UUID/idempotency key, проигравший writer возвращает уже сохранённого владельца физической операции и не создаёт вторую identity.
+- Lookup Node VPN task стал status-agnostic и возвращает также `SUCCEEDED/FAILED/CANCELLED`. `ProvisionVpn` повторно ставит в очередь только `PENDING`, не дублирует `IN_PROGRESS`, локально финализирует `SUCCEEDED` без удалённого replay и направляет `FAILED/CANCELLED` в cleanup.
+- Конфигурация `FAILED` больше не допускает выбор другого endpoint или создание replacement: ставится durable `replacement_cleanup` через `RevokeVpn`, cleanup выполняется с прежними client UUID/inbound/endpoint, и новая конфигурация разрешается только после состояния `REVOKED`.
+- Переходы `cancel_provisioning_for_revoke()` и `request_cleanup_from_failed()` теперь атомарно переводят конфигурацию в `REVOKING/REVOKED desired` с новой generation. Успешная panel-компенсация завершает этот переход в `REVOKED`, создаёт outbox-событие и не оставляет конфигурацию зависшей.
 - Завершён `CHANGE-11`: admin API для subscriptions, VPN configurations, payment orders, nodes и node tasks принимает `limit=1..200`/`offset>=0` с backward-compatible defaults `100/0`, запрашивает у repository `limit + 1`, возвращает исходный `list[...]` и заголовки `X-Page-Limit`, `X-Page-Offset`, `X-Has-More` без `COUNT(*)`.
 - Все пять paginated repository-запросов имеют стабильную сортировку с primary-key tiebreaker; admin UI использует server-side страницы по 50 записей, переходы `offset ± 50`, состояние `has_more` из response headers и явно обозначает, что показана только текущая страница.
 - Реализация `CHANGE-12` доведена на уровне кода: создание tariff/server/node/endpoint использует DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`; для node и endpoint заданы точные conflict targets, а server намеренно учитывает оба независимых уникальных ключа — имя и host.
@@ -32,6 +37,7 @@
 ## Проверено
 
 - `python -m compileall -q src tests alembic` — успешно.
+- Целевой набор `CHANGE-04`: `70 passed` — domain transitions, Node/panel task states, terminal local recovery, cleanup-before-replacement, original endpoint/client preservation, physical-index/repository conflict contracts, same-key central retry и Node Agent ambiguous-operation recovery.
 - Целевые regression-тесты `CHANGE-12`: `10 passed`; совместно с тестами `CHANGE-11`: `28 passed`.
 - PostgreSQL-набор `CHANGE-12` корректно собирается, но в текущей среде дал `6 skipped`, поскольку здесь отсутствуют Docker и PostgreSQL. До запуска этих шести тестов на настоящем PostgreSQL пункт считается реализованным, но не полностью подтверждённым.
 - Целевые regression-тесты `CHANGE-11`: `18 passed` (HTTP defaults/bounds/body, API query contract, probe row/headers, application forwarding, repository window/stable ordering и UI contract).
@@ -39,15 +45,15 @@
 - `node --check` для admin UI JavaScript — успешно; `pip check` — зависимости согласованы.
 - Чистая установка `build.lock` + `runtime.lock` с `--require-hashes`, установка проекта без dependency resolution и `pip check` — успешно; `GET /health/live` вернул `200`, `_IncludedRouter` в маршрутах отсутствует.
 - Чистая установка `dev.lock` с `--require-hashes` и целевой pytest-набор — успешно.
-- Полный `pytest -q` после `CHANGE-08`: `198 passed, 34 failed, 6 skipped`. По сравнению с baseline после `CHANGE-12` добавились пять новых успешных тестов; точный набор из 34 унаследованных падений не изменился.
+- Полный `pytest -q` после `CHANGE-04`: `222 passed, 30 failed, 6 skipped`. От baseline `198 passed, 34 failed, 6 skipped` добавлено 20 новых успешных CHANGE-04 сценариев и восстановлены четыре относящиеся к operation identity проверки; новых падений нет, оставшиеся 30 унаследованы.
 - В текущей среде нет Docker CLI, поэтому реальный `docker compose build --no-cache` здесь не запускался; Dockerfile contract проверен автоматическим тестом, но clean image acceptance нужно выполнить на ноутбуке.
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
 ## Осталось для следующего этапа
 
 - Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
-- Полностью довести cleanup-before-replacement для FAILED VPN operations и central journal retirement use case.
 - Завершить surgical reconciliation с maintenance lease и bounded anomaly batches.
+- Завершить `CHANGE-07`: central journal retirement use case поверх уже существующих schema fields, partial index и authenticated Node Agent endpoint.
 - Переключить active fake outbox code на audit log, сохранив compatibility tombstone.
 - Завершить locking/capacity reservation в каждом production writer и panel equivalent.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
@@ -60,6 +66,6 @@
 
 Сначала выполнить на ноутбуке `docker compose build --no-cache`, поднять стенд и проверить `GET /health/live` и `/admin-ui`; затем запустить раздел «Вариант 1 — строгая автоматическая проверка» из `CHANGE12_CHECKLIST_RU.md`. Ожидается отсутствие `_IncludedRouter`, `10 passed` для unit и `6 passed` для PostgreSQL integration без `skipped`.
 
-Следующий отдельный этап разработки — выполнить только `CHANGE-04`: полностью довести physical VPN operation identity и cleanup-before-replacement state machine до начала нового reconciliation. Не повторять `CHANGE-08`, `CHANGE-10`, `CHANGE-11`, `CHANGE-12`, `CHANGE-13`, `CHANGE-14`, `CHANGE-15` и уже выполненную targeted-часть `CHANGE-16`.
+Следующий отдельный этап разработки — выполнить только `CHANGE-05`: заменить full-scan background sync на surgical reconciliation с `maintenance_leases`, bounded anomaly batches и compatibility wrapper, не повторяя уже завершённые пункты, включая `CHANGE-04`.
 
-После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `198 passed, 34 failed, 6 skipped` (шесть skipped должны исчезнуть в среде с PostgreSQL).
+После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `222 passed, 30 failed, 6 skipped` (шесть skipped должны исчезнуть в среде с PostgreSQL).

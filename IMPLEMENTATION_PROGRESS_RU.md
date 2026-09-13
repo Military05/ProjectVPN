@@ -18,6 +18,11 @@
 - Lookup Node VPN task стал status-agnostic и возвращает также `SUCCEEDED/FAILED/CANCELLED`. `ProvisionVpn` повторно ставит в очередь только `PENDING`, не дублирует `IN_PROGRESS`, локально финализирует `SUCCEEDED` без удалённого replay и направляет `FAILED/CANCELLED` в cleanup.
 - Конфигурация `FAILED` больше не допускает выбор другого endpoint или создание replacement: ставится durable `replacement_cleanup` через `RevokeVpn`, cleanup выполняется с прежними client UUID/inbound/endpoint, и новая конфигурация разрешается только после состояния `REVOKED`.
 - Переходы `cancel_provisioning_for_revoke()` и `request_cleanup_from_failed()` теперь атомарно переводят конфигурацию в `REVOKING/REVOKED desired` с новой generation. Успешная panel-компенсация завершает этот переход в `REVOKED`, создаёт outbox-событие и не оставляет конфигурацию зависшей.
+- Завершён `CHANGE-05`: `SyncExpiredSubscriptions` заменён на `ReconcileSubscriptions`; старое имя сохранено только как command/worker compatibility wrapper для ранее поставленных внутренних задач, а не как активный cron-путь.
+- Reconciliation защищён PostgreSQL maintenance lease: atomic `INSERT ... ON CONFLICT ... WHERE lease_expires_at <= now RETURNING`, fenced renew/release по `(lease_name, owner_token)`, точный ответ `{"status":"already_running"}` конкурентному запуску и возобновление после истечения lease упавшего владельца.
+- Вместо трёх неограниченных full scan запросов используется один keyset/`LIMIT` `UNION ALL` только по шести классам аномалий: истечение подписки, revoke без entitlement, cleanup `FAILED`, отсутствующая VPN, repair provisioning и repair revoke. Старые full-scan repository methods удалены.
+- Размер запуска ограничен `RECONCILIATION_BATCH_SIZE × RECONCILIATION_MAX_BATCHES_PER_RUN`, lease продлевается после каждого обработанного batch. `PENDING/IN_PROGRESS` physical tasks исключены из repair-выборки и остаются под управлением собственных recovery loops; `SUCCEEDED` task с устаревшим локальным состоянием финализируется локально без нового удалённого side effect.
+- `BACKGROUND_SYNC_INTERVAL_SECONDS` теперь действительно задаёт cadence reconciliation cron; значения валидируются как точно представимые ARQ cron-интервалы. Значения batch/max-batches/lease подключены из `Settings` и перечислены в `.env.example`.
 - Завершён `CHANGE-11`: admin API для subscriptions, VPN configurations, payment orders, nodes и node tasks принимает `limit=1..200`/`offset>=0` с backward-compatible defaults `100/0`, запрашивает у repository `limit + 1`, возвращает исходный `list[...]` и заголовки `X-Page-Limit`, `X-Page-Offset`, `X-Has-More` без `COUNT(*)`.
 - Все пять paginated repository-запросов имеют стабильную сортировку с primary-key tiebreaker; admin UI использует server-side страницы по 50 записей, переходы `offset ± 50`, состояние `has_more` из response headers и явно обозначает, что показана только текущая страница.
 - Реализация `CHANGE-12` доведена на уровне кода: создание tariff/server/node/endpoint использует DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`; для node и endpoint заданы точные conflict targets, а server намеренно учитывает оба независимых уникальных ключа — имя и host.
@@ -37,6 +42,7 @@
 ## Проверено
 
 - `python -m compileall -q src tests alembic` — успешно.
+- Целевой набор `CHANGE-05`: `51 passed` — maintenance lease/owner fencing, точный concurrent result, bounded keyset batches, шесть anomaly actions, enqueue failure, lease loss, отсутствие full-scan cron, compatibility wrapper, repository SQL contract и локальное завершение `SUCCEEDED` Node/panel task без replay.
 - Целевой набор `CHANGE-04`: `70 passed` — domain transitions, Node/panel task states, terminal local recovery, cleanup-before-replacement, original endpoint/client preservation, physical-index/repository conflict contracts, same-key central retry и Node Agent ambiguous-operation recovery.
 - Целевые regression-тесты `CHANGE-12`: `10 passed`; совместно с тестами `CHANGE-11`: `28 passed`.
 - PostgreSQL-набор `CHANGE-12` корректно собирается, но в текущей среде дал `6 skipped`, поскольку здесь отсутствуют Docker и PostgreSQL. До запуска этих шести тестов на настоящем PostgreSQL пункт считается реализованным, но не полностью подтверждённым.
@@ -46,26 +52,25 @@
 - Чистая установка `build.lock` + `runtime.lock` с `--require-hashes`, установка проекта без dependency resolution и `pip check` — успешно; `GET /health/live` вернул `200`, `_IncludedRouter` в маршрутах отсутствует.
 - Чистая установка `dev.lock` с `--require-hashes` и целевой pytest-набор — успешно.
 - Полный `pytest -q` после `CHANGE-04`: `222 passed, 30 failed, 6 skipped`. От baseline `198 passed, 34 failed, 6 skipped` добавлено 20 новых успешных CHANGE-04 сценариев и восстановлены четыре относящиеся к operation identity проверки; новых падений нет, оставшиеся 30 унаследованы.
+- Полный `pytest -q` после `CHANGE-05`: `251 passed, 30 failed, 6 skipped`. Добавлено 29 успешных CHANGE-05 сценариев; перечень 30 унаследованных падений не изменился, новых падений нет.
+- `pip check` и `git diff --check` после `CHANGE-05` — успешно.
 - В текущей среде нет Docker CLI, поэтому реальный `docker compose build --no-cache` здесь не запускался; Dockerfile contract проверен автоматическим тестом, но clean image acceptance нужно выполнить на ноутбуке.
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
 ## Осталось для следующего этапа
 
 - Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
-- Завершить surgical reconciliation с maintenance lease и bounded anomaly batches.
 - Завершить `CHANGE-07`: central journal retirement use case поверх уже существующих schema fields, partial index и authenticated Node Agent endpoint.
 - Переключить active fake outbox code на audit log, сохранив compatibility tombstone.
 - Завершить locking/capacity reservation в каждом production writer и panel equivalent.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
 - Выполнить integration tests на PostgreSQL/Redis и проверить upgrade path 0006→0007→0008→0009.
-- Исправить 34 унаследованных падения полного набора тестов перед production acceptance gate.
+- Исправить 30 унаследованных падений полного набора тестов перед production acceptance gate.
 
 Текущая ветка `main` является промежуточным checkpoint для продолжения работы, а не заявлением о полном прохождении production acceptance gate.
 
 ## Что делать в следующем промпте
 
-Сначала выполнить на ноутбуке `docker compose build --no-cache`, поднять стенд и проверить `GET /health/live` и `/admin-ui`; затем запустить раздел «Вариант 1 — строгая автоматическая проверка» из `CHANGE12_CHECKLIST_RU.md`. Ожидается отсутствие `_IncludedRouter`, `10 passed` для unit и `6 passed` для PostgreSQL integration без `skipped`.
+Следующий отдельный этап разработки — выполнить только `CHANGE-06`: заменить активный fake outbox на transactional immutable audit log, сохранить rolling compatibility trigger и tombstone для старых Redis `publish_outbox` jobs. Не повторять завершённые пункты, включая `CHANGE-04` и `CHANGE-05`.
 
-Следующий отдельный этап разработки — выполнить только `CHANGE-05`: заменить full-scan background sync на surgical reconciliation с `maintenance_leases`, bounded anomaly batches и compatibility wrapper, не повторяя уже завершённые пункты, включая `CHANGE-04`.
-
-После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `222 passed, 30 failed, 6 skipped` (шесть skipped должны исчезнуть в среде с PostgreSQL).
+После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `251 passed, 30 failed, 6 skipped`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md`.

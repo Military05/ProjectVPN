@@ -118,5 +118,7 @@ async def queue_revoke(
 
 
 @router.post("/reconcile")
-async def reconcile_now(container: ServiceContainer = Depends(get_container)) -> dict[str, int]:
+async def reconcile_now(
+    container: ServiceContainer = Depends(get_container),
+) -> dict[str, int | str]:
     return await container.applications.admin.reconcile()

@@ -23,6 +23,7 @@ from shop_bot.application.commands.recover_stale_node_tasks import recover_stale
 from shop_bot.application.commands.recover_payment_events import recover_payment_events
 from shop_bot.application.commands.provision_vpn_configuration import provision_vpn_configuration
 from shop_bot.application.commands.publish_outbox_events import publish_outbox_events
+from shop_bot.application.commands.reconcile_subscriptions import reconcile_subscriptions
 from shop_bot.application.commands.revoke_vpn_configuration import revoke_vpn_configuration
 from shop_bot.application.commands.sync_expired_subscriptions import sync_expired_subscriptions
 from shop_bot.application.commands.sync_node_status import sync_node_status
@@ -134,7 +135,13 @@ async def sync_node_status_job(ctx: dict, node_id: int | None = None) -> dict:
 
 
 async def sync_expired_subscriptions_job(ctx: dict) -> dict:
+    """Compatibility entrypoint for already queued pre-CHANGE-05 jobs."""
+
     return dict(await sync_expired_subscriptions(ctx["container"]))
+
+
+async def reconcile_subscriptions_job(ctx: dict) -> dict:
+    return dict(await reconcile_subscriptions(ctx["container"]))
 
 
 async def publish_outbox_job(ctx: dict) -> dict:
@@ -143,6 +150,25 @@ async def publish_outbox_job(ctx: dict) -> dict:
 
 async def recover_payment_events_job(ctx: dict) -> dict:
     return dict(await recover_payment_events(ctx["container"]))
+
+
+def reconciliation_cron_kwargs(interval_seconds: int) -> dict[str, int | set[int]]:
+    """Translate the validated reconciliation interval to an exact ARQ cron cadence."""
+
+    if interval_seconds <= 0 or interval_seconds > 3600 or (
+        interval_seconds < 60 and 60 % interval_seconds != 0
+    ) or (
+        interval_seconds >= 60
+        and (interval_seconds % 60 != 0 or 3600 % interval_seconds != 0)
+    ):
+        raise ValueError("unsupported reconciliation cron interval")
+    if interval_seconds < 60:
+        return {
+            "minute": set(range(60)),
+            "second": set(range(0, 60, interval_seconds)),
+        }
+    interval_minutes = interval_seconds // 60
+    return {"minute": set(range(0, 60, interval_minutes))}
 
 
 class WorkerSettings:
@@ -161,6 +187,7 @@ class WorkerSettings:
         recover_stale_panel_revoke_tasks_job,
         recover_stale_node_tasks_job,
         sync_node_status_job,
+        reconcile_subscriptions_job,
         sync_expired_subscriptions_job,
         func(publish_outbox_job, name=JobName.PUBLISH_OUTBOX.value),
         recover_payment_events_job,
@@ -172,7 +199,10 @@ class WorkerSettings:
     max_jobs = 10
     cron_jobs = [
         cron(recover_payment_events_job, minute=set(range(60))),
-        cron(sync_expired_subscriptions_job, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
+        cron(
+            reconcile_subscriptions_job,
+            **reconciliation_cron_kwargs(settings.background_sync_interval_seconds),
+        ),
         cron(publish_outbox_job, minute={1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56}),
         cron(sync_node_status_job, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}),
         cron(dispatch_due_node_tasks_job, minute=set(range(60))),

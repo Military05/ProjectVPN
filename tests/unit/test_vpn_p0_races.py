@@ -13,11 +13,12 @@ from shop_bot.application.job_names import JobName
 from shop_bot.application.revoke_reason import VpnRevokeReason
 from shop_bot.application.use_cases.admin_operations import AdminOperations
 from shop_bot.application.use_cases.revoke_vpn import RevokeVpn
-from shop_bot.application.use_cases.sync_subscriptions import SyncExpiredSubscriptions
+from shop_bot.application.use_cases.sync_subscriptions import ReconcileSubscriptions
 from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.panel_task import PanelRevokeTask, PanelRevokeTaskStatus
 from shop_bot.domain.entities.subscription import Subscription, SubscriptionPeriod, SubscriptionStatus
 from shop_bot.domain.entities.vpn import VpnConfiguration, VpnConfigurationStatus, VpnDesiredState
+from shop_bot.domain.reconciliation import ReconciliationAnomaly, ReconciliationAnomalyKind
 
 
 NOW = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
@@ -73,15 +74,6 @@ class Subscriptions:
         self.state.subscription = subscription
         self.state.saved_subscriptions += 1
 
-    async def list_expired_active_subscription_ids(self, now: datetime) -> list[int]:
-        del now
-        return list(self.state.expired_candidates)
-
-    async def list_due_subscriptions_for_provision(self, now: datetime) -> list[int]:
-        del now
-        return list(self.state.due_provision_ids)
-
-
 class VpnRepo:
     def __init__(self, state: State) -> None:
         self.state = state
@@ -112,10 +104,6 @@ class VpnRepo:
     async def save_entity(self, configuration: VpnConfiguration) -> None:
         self.state.config = configuration
         self.state.saved_configs += 1
-
-    async def list_active_configuration_ids_due_for_revoke(self, now: datetime) -> list[int]:
-        del now
-        return list(self.state.due_vpn_ids)
 
     async def get_panel_revoke_task_for_generation(self, vpn_configuration_id: int, vpn_generation: int) -> PanelRevokeTask | None:
         matches = [
@@ -159,12 +147,72 @@ class Payments:
         return len(self.state.outbox)
 
 
+class Maintenance:
+    def __init__(self, state: State) -> None:
+        self.state = state
+
+    async def acquire_lease(self, **kwargs: Any) -> bool:
+        del kwargs
+        return True
+
+    async def renew_lease(self, **kwargs: Any) -> bool:
+        del kwargs
+        return True
+
+    async def release_lease(self, **kwargs: Any) -> bool:
+        del kwargs
+        return True
+
+    async def list_reconciliation_anomalies(
+        self,
+        *,
+        now: datetime,
+        after_kind_order: int,
+        after_entity_id: int,
+        limit: int,
+    ) -> list[ReconciliationAnomaly]:
+        del now
+        anomalies = [
+            *(
+                ReconciliationAnomaly(
+                    1,
+                    ReconciliationAnomalyKind.EXPIRE_SUBSCRIPTION,
+                    subscription_id,
+                )
+                for subscription_id in self.state.expired_candidates
+            ),
+            *(
+                ReconciliationAnomaly(
+                    2,
+                    ReconciliationAnomalyKind.REVOKE_VPN,
+                    vpn_configuration_id,
+                )
+                for vpn_configuration_id in self.state.due_vpn_ids
+            ),
+            *(
+                ReconciliationAnomaly(
+                    4,
+                    ReconciliationAnomalyKind.PROVISION_SUBSCRIPTION,
+                    subscription_id,
+                )
+                for subscription_id in self.state.due_provision_ids
+            ),
+        ]
+        return [
+            anomaly
+            for anomaly in anomalies
+            if (anomaly.kind_order, anomaly.entity_id)
+            > (after_kind_order, after_entity_id)
+        ][:limit]
+
+
 class Uow:
     def __init__(self, state: State) -> None:
         self.subscriptions = Subscriptions(state)
         self.vpn = VpnRepo(state)
         self.nodes = Nodes(state)
         self.payments = Payments(state)
+        self.maintenance = Maintenance(state)
 
     async def __aenter__(self) -> "Uow":
         return self
@@ -195,7 +243,7 @@ async def test_subscription_renewed_during_expiration_sync_is_not_ended() -> Non
     # Candidate was selected as expired, but authoritative post-lock read sees renewal.
     state.period = current_period()
     queue = Queue()
-    result = await SyncExpiredSubscriptions(lambda: Uow(state), queue, lambda: NOW).execute()
+    result = await ReconcileSubscriptions(lambda: Uow(state), queue, lambda: NOW).execute()
 
     assert result["expired_subscriptions"] == 0
     assert state.subscription.status is SubscriptionStatus.ACTIVE
@@ -210,7 +258,7 @@ async def test_actual_expired_count_tracks_real_transitions_not_candidates() -> 
     state.expired_candidates = [1, 999]
     state.due_vpn_ids = []
     queue = Queue()
-    result = await SyncExpiredSubscriptions(lambda: Uow(state), queue, lambda: NOW).execute()
+    result = await ReconcileSubscriptions(lambda: Uow(state), queue, lambda: NOW).execute()
 
     assert result["expired_subscriptions"] == 1
     assert state.subscription.status is SubscriptionStatus.ENDED
@@ -287,6 +335,29 @@ async def test_repeated_normal_revoke_reuses_current_generation_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_locally_finalizes_succeeded_node_revoke_without_replay() -> None:
+    state = State()
+    initial_queue = Queue()
+    case = revoke_case(state, initial_queue)
+    await case.execute(vpn_configuration_id=7, reason="force")
+    state.node_tasks[0].status = NodeTaskStatus.SUCCEEDED
+    recovery_queue = Queue()
+
+    result = await revoke_case(state, recovery_queue).execute(
+        vpn_configuration_id=7,
+        reason="force",
+    )
+
+    assert result == {"status": "revoked", "vpn_configuration_id": 7}
+    assert state.config.status is VpnConfigurationStatus.REVOKED
+    assert len(state.node_tasks) == 1
+    assert [event["event_name"] for event in state.outbox] == [
+        "vpn_configuration_revoked"
+    ]
+    assert recovery_queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+
+
+@pytest.mark.asyncio
 async def test_panel_revoke_is_persisted_before_dispatch_and_repeated_call_reuses_it() -> None:
     state = State(node_id=None)
     queue = Queue()
@@ -300,6 +371,27 @@ async def test_panel_revoke_is_persisted_before_dispatch_and_repeated_call_reuse
     assert state.panel_tasks[0].vpn_generation == 2
     assert state.panel_tasks[0].payload == {"xui_inbound_id": "main-vless", "client_uuid": str(CLIENT_UUID)}
     assert queue.jobs == [(JobName.DISPATCH_PANEL_REVOKE_TASK, (1,))]
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_locally_finalizes_succeeded_panel_revoke_without_replay() -> None:
+    state = State(node_id=None)
+    await revoke_case(state, Queue()).execute(vpn_configuration_id=7, reason="force")
+    state.panel_tasks[0].status = PanelRevokeTaskStatus.SUCCEEDED
+    recovery_queue = Queue()
+
+    result = await revoke_case(state, recovery_queue).execute(
+        vpn_configuration_id=7,
+        reason="force",
+    )
+
+    assert result == {"status": "revoked", "vpn_configuration_id": 7}
+    assert state.config.status is VpnConfigurationStatus.REVOKED
+    assert len(state.panel_tasks) == 1
+    assert [event["event_name"] for event in state.outbox] == [
+        "vpn_configuration_revoked"
+    ]
+    assert recovery_queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
 
 
 @pytest.mark.asyncio
@@ -338,6 +430,36 @@ async def test_force_retry_after_failed_panel_cleanup_starts_fresh_generation_an
     assert fresh_task.idempotency_key != failed_task.idempotency_key
     assert fresh_task.task_uuid != failed_task.task_uuid
     assert queue.jobs == [(JobName.DISPATCH_PANEL_REVOKE_TASK, (2,))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "desired_state"),
+    [
+        (VpnConfigurationStatus.PROVISIONING, VpnDesiredState.ACTIVE),
+        (VpnConfigurationStatus.FAILED, VpnDesiredState.ACTIVE),
+        (VpnConfigurationStatus.REVOKE_FAILED, VpnDesiredState.REVOKED),
+    ],
+)
+async def test_expiration_reconciliation_cleans_non_active_remote_live_states(
+    status: VpnConfigurationStatus,
+    desired_state: VpnDesiredState,
+) -> None:
+    state = State()
+    state.config.status = status
+    state.config.desired_state = desired_state
+    queue = Queue()
+
+    result = await revoke_case(state, queue).execute(
+        vpn_configuration_id=7,
+        reason="expiration",
+    )
+
+    assert result["status"] == "queued"
+    assert state.config.status is VpnConfigurationStatus.REVOKING
+    assert state.config.desired_state is VpnDesiredState.REVOKED
+    assert state.config.generation == 2
+    assert len(state.node_tasks) == 1
 
 
 @pytest.mark.asyncio

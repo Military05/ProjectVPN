@@ -408,25 +408,6 @@ class VpnRepository:
         result = await self.connection.execute(query)
         return [panel_revoke_task_from_row(row) for row in result.mappings().all()]
 
-    async def list_active_configuration_ids_due_for_revoke(self, now: datetime) -> list[int]:
-        query: Select[Any] = (
-            select(vpn_configurations.c.vpn_configuration_id)
-            .join(subscriptions, subscriptions.c.subscription_id == vpn_configurations.c.subscription_id)
-            .where(vpn_configurations.c.status == "active")
-            .where(
-                (subscriptions.c.status != "active")
-                | ~subscriptions.c.subscription_id.in_(
-                    select(subscription_periods.c.subscription_id).where(
-                        subscription_periods.c.is_paid.is_(True),
-                        subscription_periods.c.starts_at <= now,
-                        subscription_periods.c.expires_at > now,
-                    )
-                )
-            )
-        )
-        result = await self.connection.execute(query)
-        return [int(value) for value in result.scalars().all()]
-
     async def get_entity(
         self, vpn_configuration_id: int, *, for_update: bool = False
     ) -> VpnConfiguration | None:

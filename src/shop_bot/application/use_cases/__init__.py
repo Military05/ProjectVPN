@@ -12,7 +12,7 @@ from shop_bot.application.use_cases.publish_outbox import PublishOutbox
 from shop_bot.application.use_cases.register_user import RegisterBotUser
 from shop_bot.application.use_cases.revoke_vpn import RevokeVpn
 from shop_bot.application.use_cases.sync_nodes import SyncNodeStatus
-from shop_bot.application.use_cases.sync_subscriptions import SyncExpiredSubscriptions
+from shop_bot.application.use_cases.sync_subscriptions import ReconcileSubscriptions
 
 __all__ = [
     "ActivateSubscription",
@@ -27,7 +27,7 @@ __all__ = [
     "ProvisionVpn",
     "PublishOutbox",
     "RegisterBotUser",
+    "ReconcileSubscriptions",
     "RevokeVpn",
-    "SyncExpiredSubscriptions",
     "SyncNodeStatus",
 ]

@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Protocol, Self
+from uuid import UUID
 
 from shop_bot.domain.entities import (
     Node,
@@ -19,6 +20,7 @@ from shop_bot.domain.entities import (
     User,
     VpnConfiguration,
 )
+from shop_bot.domain.reconciliation import ReconciliationAnomaly
 
 Row = Mapping[str, Any]
 
@@ -95,10 +97,6 @@ class SubscriptionRepository(Protocol):
     async def save_period_entity(self, period: SubscriptionPeriod) -> None: ...
 
     async def has_funded_period_after(self, subscription_id: int, now: datetime) -> bool: ...
-
-    async def list_expired_active_subscription_ids(self, now: datetime) -> list[int]: ...
-
-    async def list_due_subscriptions_for_provision(self, now: datetime) -> list[int]: ...
 
     async def list_subscriptions(self, limit: int = 100, offset: int = 0) -> list[Row]: ...
 
@@ -298,8 +296,6 @@ class VpnRepository(Protocol):
         self, now: datetime, limit: int = 100
     ) -> list[PanelRevokeTask]: ...
 
-    async def list_active_configuration_ids_due_for_revoke(self, now: datetime) -> list[int]: ...
-
     async def list_configurations(self, limit: int = 100, offset: int = 0) -> list[Row]: ...
 
 
@@ -413,6 +409,37 @@ class NodeRepository(Protocol):
     ) -> None: ...
 
 
+class MaintenanceRepository(Protocol):
+    async def acquire_lease(
+        self,
+        *,
+        lease_name: str,
+        owner_token: UUID,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool: ...
+
+    async def renew_lease(
+        self,
+        *,
+        lease_name: str,
+        owner_token: UUID,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool: ...
+
+    async def release_lease(self, *, lease_name: str, owner_token: UUID) -> bool: ...
+
+    async def list_reconciliation_anomalies(
+        self,
+        *,
+        now: datetime,
+        after_kind_order: int,
+        after_entity_id: int,
+        limit: int,
+    ) -> list[ReconciliationAnomaly]: ...
+
+
 class UnitOfWork(Protocol):
     users: UserRepository
     admin: AdminRepository
@@ -421,6 +448,7 @@ class UnitOfWork(Protocol):
     servers: ServerRepository
     vpn: VpnRepository
     nodes: NodeRepository
+    maintenance: MaintenanceRepository
 
     async def __aenter__(self) -> Self: ...
 

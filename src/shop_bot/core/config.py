@@ -175,6 +175,7 @@ class Settings(BaseSettings):
             "node_status_probe_lease_seconds",
             "node_health_stale_after_seconds",
             "node_unavailable_retry_seconds",
+            "background_sync_interval_seconds",
             "reconciliation_batch_size",
             "reconciliation_max_batches_per_run",
             "reconciliation_lease_seconds",
@@ -182,6 +183,16 @@ class Settings(BaseSettings):
         for name in positive_settings:
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
+        interval = self.background_sync_interval_seconds
+        if interval > 3600 or (
+            interval < 60 and 60 % interval != 0
+        ) or (
+            interval >= 60 and (interval % 60 != 0 or 3600 % interval != 0)
+        ):
+            raise ValueError(
+                "background_sync_interval_seconds must exactly divide one hour "
+                "and be either a divisor of 60 seconds or a whole number of minutes"
+            )
         if self.node_health_stale_after_seconds < 2 * self.node_status_sync_interval_seconds + self.node_request_timeout_seconds:
             raise ValueError("node_health_stale_after_seconds must cover two sync intervals and request timeout")
 

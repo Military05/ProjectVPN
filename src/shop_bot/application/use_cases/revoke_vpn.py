@@ -11,7 +11,11 @@ from shop_bot.application.ports import JobQueue, UnitOfWorkFactory
 from shop_bot.application.revoke_reason import VpnRevokeReason
 from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.panel_task import PanelRevokeTask, PanelRevokeTaskStatus
-from shop_bot.domain.entities.vpn import VpnConfigurationStatus, VpnDesiredState
+from shop_bot.domain.entities.vpn import (
+    VpnConfiguration,
+    VpnConfigurationStatus,
+    VpnDesiredState,
+)
 from shop_bot.domain.repositories.interfaces import UnitOfWork
 
 
@@ -21,6 +25,11 @@ class RevokePlan:
     node_task_id: int | None = None
     panel_task_id: int | None = None
     should_enqueue: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RevokeRecoveryPlan:
+    vpn_configuration_id: int
 
 
 @dataclass(slots=True)
@@ -46,6 +55,12 @@ class RevokeVpn:
             reason=reason,
             now=now,
         )
+        if isinstance(plan, RevokeRecoveryPlan):
+            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
+            return {
+                "status": "revoked",
+                "vpn_configuration_id": plan.vpn_configuration_id,
+            }
         if isinstance(plan, dict):
             return plan
         if plan.node_task_id is not None:
@@ -72,7 +87,7 @@ class RevokeVpn:
         vpn_configuration_id: int,
         reason: VpnRevokeReason,
         now: datetime,
-    ) -> RevokePlan | dict[str, str | int]:
+    ) -> RevokePlan | RevokeRecoveryPlan | dict[str, str | int]:
         # Candidate read supplies immutable routing/subscription identifiers only.
         # The authoritative state decision below is made after the required row locks.
         async with self.uow_factory() as uow:
@@ -96,7 +111,14 @@ class RevokeVpn:
             if configuration is None:
                 return {"status": "missing"}
 
-            existing = await self._existing_current_revoke_task(uow, configuration, config_row)
+            existing = await self._existing_current_revoke_task(
+                uow,
+                configuration,
+                config_row,
+                now=now,
+            )
+            if isinstance(existing, RevokeRecoveryPlan):
+                return existing
             if configuration.status is VpnConfigurationStatus.REVOKING and existing is not None:
                 return existing
             if (
@@ -112,31 +134,23 @@ class RevokeVpn:
                     "vpn_configuration_id": vpn_configuration_id,
                 }
 
-            if reason is VpnRevokeReason.EXPIRATION:
-                if configuration.status is not VpnConfigurationStatus.ACTIVE:
-                    return {
-                        "status": str(configuration.status),
-                        "vpn_configuration_id": vpn_configuration_id,
-                    }
+            if configuration.status is VpnConfigurationStatus.ACTIVE:
                 configuration.begin_revoke()
+            elif configuration.status is VpnConfigurationStatus.REVOKE_FAILED:
+                configuration.retry_revoke()
+            elif configuration.status is VpnConfigurationStatus.PROVISIONING:
+                configuration.cancel_provisioning_for_revoke()
+            elif configuration.status is VpnConfigurationStatus.FAILED:
+                configuration.request_cleanup_from_failed()
+            elif configuration.status is VpnConfigurationStatus.REVOKING:
+                # A legacy/inconsistent row may have lost its durable task. Do not
+                # change generation; reconstruct the task for this current epoch.
+                pass
             else:
-                if configuration.status is VpnConfigurationStatus.ACTIVE:
-                    configuration.begin_revoke()
-                elif configuration.status is VpnConfigurationStatus.REVOKE_FAILED:
-                    configuration.retry_revoke()
-                elif configuration.status is VpnConfigurationStatus.PROVISIONING:
-                    configuration.cancel_provisioning_for_revoke()
-                elif configuration.status is VpnConfigurationStatus.FAILED:
-                    configuration.request_cleanup_from_failed()
-                elif configuration.status is VpnConfigurationStatus.REVOKING:
-                    # A legacy/inconsistent row may have lost its durable task. Do not
-                    # change generation; reconstruct the task for this current epoch.
-                    pass
-                else:
-                    return {
-                        "status": str(configuration.status),
-                        "vpn_configuration_id": vpn_configuration_id,
-                    }
+                return {
+                    "status": str(configuration.status),
+                    "vpn_configuration_id": vpn_configuration_id,
+                }
 
             await uow.vpn.save_entity(configuration)
             config_row = await uow.vpn.get_configuration_with_endpoint(vpn_configuration_id)
@@ -179,9 +193,11 @@ class RevokeVpn:
     async def _existing_current_revoke_task(
         self,
         uow: UnitOfWork,
-        configuration: Any,
+        configuration: VpnConfiguration,
         config_row: Mapping[str, Any],
-    ) -> dict[str, str | int] | None:
+        *,
+        now: datetime,
+    ) -> RevokeRecoveryPlan | dict[str, str | int] | None:
         if configuration.id is None:
             return None
         if config_row.get("node_id") is None:
@@ -191,6 +207,16 @@ class RevokeVpn:
             )
             if task is None or task.id is None:
                 return None
+            if (
+                task.status is PanelRevokeTaskStatus.SUCCEEDED
+                and configuration.status is VpnConfigurationStatus.REVOKING
+                and configuration.desired_state is VpnDesiredState.REVOKED
+            ):
+                return await self._recover_succeeded_revoke(
+                    uow,
+                    configuration=configuration,
+                    now=now,
+                )
             if task.status is PanelRevokeTaskStatus.FAILED:
                 # A failed cleanup is not reusable as the owner of a deliberate
                 # retry. Force retry must start a new generation/operation epoch.
@@ -207,11 +233,40 @@ class RevokeVpn:
         )
         if task is None or task.id is None:
             return None
+        if (
+            task.status is NodeTaskStatus.SUCCEEDED
+            and configuration.status is VpnConfigurationStatus.REVOKING
+            and configuration.desired_state is VpnDesiredState.REVOKED
+        ):
+            return await self._recover_succeeded_revoke(
+                uow,
+                configuration=configuration,
+                now=now,
+            )
         return {
             "status": "queued" if task.status is NodeTaskStatus.PENDING else str(task.status),
             "vpn_configuration_id": configuration.id,
             "node_task_id": task.id,
         }
+
+    @staticmethod
+    async def _recover_succeeded_revoke(
+        uow: UnitOfWork,
+        *,
+        configuration: VpnConfiguration,
+        now: datetime,
+    ) -> RevokeRecoveryPlan:
+        if configuration.id is None:
+            raise RuntimeError("Persisted VPN configuration has no id")
+        configuration.revoke(now)
+        await uow.vpn.save_entity(configuration)
+        await uow.payments.create_outbox_event(
+            event_name="vpn_configuration_revoked",
+            aggregate_type="vpn_configuration",
+            aggregate_id=configuration.id,
+            payload={"vpn_configuration_id": configuration.id},
+        )
+        return RevokeRecoveryPlan(vpn_configuration_id=configuration.id)
 
     async def _create_node_task(
         self,

@@ -19,9 +19,9 @@ from shop_bot.application.use_cases import (
     ProcessPayment,
     ProvisionVpn,
     PublishOutbox,
+    ReconcileSubscriptions,
     RegisterBotUser,
     RevokeVpn,
-    SyncExpiredSubscriptions,
     SyncNodeStatus,
 )
 from shop_bot.core.config import Settings, get_settings
@@ -46,7 +46,7 @@ class ApplicationServices:
     dispatch_node_task: DispatchNodeTask
     dispatch_panel_provision_task: DispatchPanelProvisionTask
     dispatch_panel_revoke_task: DispatchPanelRevokeTask
-    sync_expired_subscriptions: SyncExpiredSubscriptions
+    reconcile_subscriptions: ReconcileSubscriptions
     sync_node_status: SyncNodeStatus
     publish_outbox: PublishOutbox
 
@@ -94,10 +94,13 @@ def _build_application_services(
 
     node_gateway = NodeApiClient(settings)
     activate_subscription = ActivateSubscription(SubscriptionPolicy())
-    sync_expired_subscriptions = SyncExpiredSubscriptions(
+    reconcile_subscriptions = ReconcileSubscriptions(
         uow_factory=uow_factory,
         job_queue=job_queue,
         clock=utcnow,
+        batch_size=settings.reconciliation_batch_size,
+        max_batches_per_run=settings.reconciliation_max_batches_per_run,
+        lease_seconds=settings.reconciliation_lease_seconds,
     )
     sync_node_status = SyncNodeStatus(
         uow_factory=uow_factory,
@@ -114,7 +117,7 @@ def _build_application_services(
         admin=AdminOperations(
             uow_factory=uow_factory,
             job_queue=job_queue,
-            reconcile_subscriptions=sync_expired_subscriptions,
+            reconcile_subscriptions=reconcile_subscriptions,
             activate_subscription=activate_subscription,
             clock=utcnow,
         ),
@@ -190,7 +193,7 @@ def _build_application_services(
             lease_seconds=settings.panel_task_lease_seconds,
             clock=utcnow,
         ),
-        sync_expired_subscriptions=sync_expired_subscriptions,
+        reconcile_subscriptions=reconcile_subscriptions,
         sync_node_status=sync_node_status,
         publish_outbox=PublishOutbox(uow_factory=uow_factory, clock=utcnow),
     )

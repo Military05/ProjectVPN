@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from shop_bot.application.ports import JobQueue, UnitOfWorkFactory
 from shop_bot.application.revoke_reason import VpnRevokeReason
-from shop_bot.application.use_cases.sync_subscriptions import SyncExpiredSubscriptions
+from shop_bot.application.use_cases.sync_subscriptions import ReconcileSubscriptions
 from shop_bot.application.use_cases.activate_subscription import ActivateSubscription
 from shop_bot.core.exceptions import NotFoundError
 
@@ -16,7 +16,7 @@ from shop_bot.core.exceptions import NotFoundError
 class AdminOperations:
     uow_factory: UnitOfWorkFactory
     job_queue: JobQueue
-    reconcile_subscriptions: SyncExpiredSubscriptions
+    reconcile_subscriptions: ReconcileSubscriptions
     clock: Callable[[], datetime]
     activate_subscription: ActivateSubscription | None = None
 
@@ -118,7 +118,7 @@ class AdminOperations:
         )
         return {"vpn_configuration_id": vpn_configuration_id, "status": "queued"}
 
-    async def reconcile(self) -> dict[str, int]:
+    async def reconcile(self) -> dict[str, int | str]:
         return await self.reconcile_subscriptions.execute()
 
     async def get_payment_with_attempt(self, payment_order_id: int) -> tuple[dict[str, Any], dict[str, Any] | None]:

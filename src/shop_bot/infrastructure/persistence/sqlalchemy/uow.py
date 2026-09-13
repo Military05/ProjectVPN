@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransactio
 from shop_bot.infrastructure.persistence.repositories import (
     AdminRepository,
     AuditRepository,
+    MaintenanceRepository,
     NodeRepository,
     PaymentRepository,
     ServerRepository,
@@ -31,6 +32,7 @@ class SqlAlchemyUnitOfWork:
         self.admin: AdminRepository
         self.nodes: NodeRepository
         self.audit: AuditRepository
+        self.maintenance: MaintenanceRepository
 
     async def __aenter__(self) -> "SqlAlchemyUnitOfWork":
         self.connection = await self._engine.connect()
@@ -43,6 +45,7 @@ class SqlAlchemyUnitOfWork:
         self.admin = AdminRepository(self.connection)
         self.nodes = NodeRepository(self.connection)
         self.audit = AuditRepository(self.connection)
+        self.maintenance = MaintenanceRepository(self.connection)
         return self
 
     async def commit(self) -> None:

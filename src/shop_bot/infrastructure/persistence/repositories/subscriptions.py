@@ -161,37 +161,6 @@ class SubscriptionRepository:
         result = await self.connection.execute(query)
         return list(result.mappings().all())
 
-    async def list_expired_active_subscription_ids(self, now: datetime) -> list[int]:
-        query: Select[Any] = (
-            select(subscriptions.c.subscription_id)
-            .where(subscriptions.c.status == "active")
-            .where(
-                ~subscriptions.c.subscription_id.in_(
-                    select(subscription_periods.c.subscription_id).where(
-                        subscription_periods.c.is_paid.is_(True),
-                        subscription_periods.c.expires_at > now,
-                    )
-                )
-            )
-        )
-        result = await self.connection.execute(query)
-        return [int(value) for value in result.scalars().all()]
-
-    async def list_due_subscriptions_for_provision(self, now: datetime) -> list[int]:
-        query: Select[Any] = (
-            select(subscriptions.c.subscription_id)
-            .join(subscription_periods, subscription_periods.c.subscription_id == subscriptions.c.subscription_id)
-            .where(
-                subscriptions.c.status == "active",
-                subscription_periods.c.is_paid.is_(True),
-                subscription_periods.c.starts_at <= now,
-                subscription_periods.c.expires_at > now,
-            )
-            .distinct()
-        )
-        result = await self.connection.execute(query)
-        return [int(value) for value in result.scalars().all()]
-
     async def get_entity(self, subscription_id: int, *, for_update: bool = False) -> Subscription | None:
         query: Select[Any] = select(subscriptions).where(subscriptions.c.subscription_id == subscription_id).limit(1)
         if for_update:

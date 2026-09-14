@@ -203,23 +203,6 @@ class PaymentRepository(Protocol):
         self, *, payment_order_id: int, provider: str, transaction_type: str, transaction_status: str
     ) -> int: ...
 
-    async def create_outbox_event(
-        self,
-        *,
-        event_name: str,
-        aggregate_type: str,
-        aggregate_id: int,
-        payload: dict[str, Any],
-        status: str = "pending",
-    ) -> int: ...
-
-    async def list_pending_outbox_events(self, now: datetime, limit: int = 100) -> list[Row]: ...
-
-    async def mark_outbox_published(self, outbox_event_id: int, published_at: datetime) -> None: ...
-
-    async def reschedule_outbox_event(self, outbox_event_id: int, last_error: str, available_at: datetime) -> None: ...
-
-
 class ServerRepository(Protocol):
     async def list_servers(self) -> list[Row]: ...
 
@@ -440,6 +423,18 @@ class MaintenanceRepository(Protocol):
     ) -> list[ReconciliationAnomaly]: ...
 
 
+class AuditRepository(Protocol):
+    async def append(
+        self,
+        *,
+        event_name: str,
+        aggregate_type: str,
+        aggregate_id: int,
+        payload: Mapping[str, Any] | None = None,
+        created_at: datetime | None = None,
+    ) -> int: ...
+
+
 class UnitOfWork(Protocol):
     users: UserRepository
     admin: AdminRepository
@@ -449,6 +444,7 @@ class UnitOfWork(Protocol):
     vpn: VpnRepository
     nodes: NodeRepository
     maintenance: MaintenanceRepository
+    audit: AuditRepository
 
     async def __aenter__(self) -> Self: ...
 

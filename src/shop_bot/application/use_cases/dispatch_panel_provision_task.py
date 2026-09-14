@@ -49,7 +49,6 @@ class DispatchPanelProvisionTask:
             raise
 
         if outcome == "activated":
-            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
             return {"status": "succeeded", "panel_task_id": prepared.task_id}
         if outcome == "lease_lost":
             # Ownership was replaced by stale-lease recovery. That recovery marks
@@ -157,7 +156,7 @@ class DispatchPanelProvisionTask:
                 await uow.vpn.save_entity(configuration)
                 task.complete(now=now)
                 await uow.vpn.save_panel_task_entity(task)
-                await uow.payments.create_outbox_event(
+                await uow.audit.append(
                     event_name="vpn_configuration_activated",
                     aggregate_type="vpn_configuration",
                     aggregate_id=task.vpn_configuration_id,
@@ -213,21 +212,18 @@ class DispatchPanelProvisionTask:
         except Exception as exc:
             await self._record_compensation_failure(prepared, exc)
             return {"status": "compensation_required", "panel_task_id": prepared.task_id}
-        result, publish_outbox = await self._record_compensation_success(prepared)
-        if publish_outbox:
-            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
-        return result
+        return await self._record_compensation_success(prepared)
 
     async def _record_compensation_success(
         self, prepared: PreparedPanelDispatch
-    ) -> tuple[dict[str, str | int], bool]:
+    ) -> dict[str, str | int]:
         now = self.clock()
         async with self.uow_factory() as uow:
             task = await uow.vpn.get_panel_task_entity(prepared.task_id, for_update=True)
             if task is None or not task.owns_lease(
                 token=prepared.lease_token, attempt_no=prepared.attempt_no
             ):
-                return {"status": "lease_lost", "panel_task_id": prepared.task_id}, False
+                return {"status": "lease_lost", "panel_task_id": prepared.task_id}
             configuration = await uow.vpn.get_entity(task.vpn_configuration_id, for_update=True)
             completes_cancelled_provision = (
                 configuration is not None
@@ -247,17 +243,15 @@ class DispatchPanelProvisionTask:
             )
             task.compensation_succeeded(now=now, terminal_local_state=terminal_local_state)
             await uow.vpn.save_panel_task_entity(task)
-            publish_outbox = False
             if completes_cancelled_provision and configuration is not None:
                 configuration.revoke(now)
                 await uow.vpn.save_entity(configuration)
-                await uow.payments.create_outbox_event(
+                await uow.audit.append(
                     event_name="vpn_configuration_revoked",
                     aggregate_type="vpn_configuration",
                     aggregate_id=task.vpn_configuration_id,
                     payload={"vpn_configuration_id": task.vpn_configuration_id},
                 )
-                publish_outbox = True
             if (
                 task.status is PanelProvisionTaskStatus.FAILED
                 and configuration is not None
@@ -270,7 +264,7 @@ class DispatchPanelProvisionTask:
             return {
                 "status": str(task.status),
                 "panel_task_id": prepared.task_id,
-            }, publish_outbox
+            }
 
     async def _record_compensation_failure(self, prepared: PreparedPanelDispatch, error: Exception) -> None:
         now = self.clock()

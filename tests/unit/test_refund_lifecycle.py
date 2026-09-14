@@ -62,14 +62,19 @@ class Payments:
     def __init__(self, event: PaymentEvent, attempt: PaymentAttempt, order: PaymentOrder, cumulative: int):
         self.event, self.attempt, self.order, self.cumulative = event, attempt, order, cumulative
         self.transactions: list[dict[str, Any]] = []
-        self.outbox: list[dict[str, Any]] = []
     async def get_event_entity(self, event_id: int, for_update: bool=False): return self.event
-    async def get_attempt_entity(self, attempt_id: int): return self.attempt
+    async def get_attempt_entity(self, attempt_id: int, for_update: bool=False):
+        del for_update
+        return self.attempt
     async def get_order_entity(self, order_id: int, for_update: bool=False): return self.order
     async def create_provider_transaction(self, **kwargs: Any): self.transactions.append(kwargs)
     async def sum_provider_transactions(self, **kwargs: Any): return self.cumulative
     async def save_event_entity(self, event: PaymentEvent): self.event = event
-    async def create_outbox_event(self, **kwargs: Any): self.outbox.append(kwargs); return len(self.outbox)
+
+
+class Audit:
+    def __init__(self) -> None: self.events: list[dict[str, Any]] = []
+    async def append(self, **kwargs: Any): self.events.append(kwargs); return len(self.events)
 
 
 class Subs:
@@ -90,7 +95,8 @@ class Vpn:
 
 
 class Uow:
-    def __init__(self, payments: Payments, subs: Subs, vpn: Vpn): self.payments, self.subscriptions, self.vpn = payments, subs, vpn
+    def __init__(self, payments: Payments, subs: Subs, vpn: Vpn, audit: Audit):
+        self.payments, self.subscriptions, self.vpn, self.audit = payments, subs, vpn, audit
     async def __aenter__(self): return self
     async def __aexit__(self, *args: Any): return None
 
@@ -108,37 +114,41 @@ def scenario(*, refund_minor: int, cumulative: int, period: SubscriptionPeriod |
     vpn = VpnConfiguration(id=9, subscription_id=3, server_endpoint_id=1, client_uuid=__import__('uuid').UUID('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), display_name='vpn', status=VpnConfigurationStatus.ACTIVE)
     payments = Payments(event, attempt, order, cumulative)
     subs = Subs(period, subscription, funded_after=funded_after)
+    audit = Audit()
     queue = Queue()
-    case = ProcessPayment(uow_factory=lambda: Uow(payments, subs, Vpn(vpn)), activate_subscription=SimpleNamespace(), job_queue=queue, clock=lambda: NOW)
-    return case, payments, subs, queue
+    case = ProcessPayment(uow_factory=lambda: Uow(payments, subs, Vpn(vpn), audit), activate_subscription=SimpleNamespace(), job_queue=queue, clock=lambda: NOW)
+    return case, payments, subs, audit, queue
 
 
 @pytest.mark.asyncio
 async def test_partial_refund_records_transaction_without_revoking_access() -> None:
-    case, payments, subs, queue = scenario(refund_minor=400, cumulative=400)
+    case, payments, subs, audit, queue = scenario(refund_minor=400, cumulative=400)
     result = await case.execute(payment_event_id=1)
     assert result == {"status":"processed", "subscription_id":None}
     assert payments.transactions[0]["transaction_type"] == "refund_succeeded"
     assert subs.subscription.status is SubscriptionStatus.ACTIVE
-    assert queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+    assert audit.events == []
+    assert queue.jobs == []
 
 
 @pytest.mark.asyncio
 async def test_full_refund_unfunds_period_ends_subscription_and_queues_vpn_revoke() -> None:
-    case, payments, subs, queue = scenario(refund_minor=600, cumulative=1000)
+    case, payments, subs, audit, queue = scenario(refund_minor=600, cumulative=1000)
     result = await case.execute(payment_event_id=1)
     assert result == {"status":"processed", "subscription_id":None}
     assert subs.period is not None and subs.period.is_paid is False
     assert subs.subscription.status is SubscriptionStatus.ENDED
     assert (JobName.REVOKE_VPN_CONFIGURATION, (9, "expiration")) in queue.jobs
-    assert (JobName.PUBLISH_OUTBOX, ()) in queue.jobs
+    assert audit.events == []
 
 
 @pytest.mark.asyncio
-async def test_full_refund_historical_unmapped_period_emits_reconciliation_outbox() -> None:
+async def test_full_refund_historical_unmapped_period_emits_reconciliation_audit_event() -> None:
     # Explicitly use historical NULL provenance by removing the auto-created linked period.
-    case, payments, subs, queue = scenario(refund_minor=1000, cumulative=1000)
+    case, payments, subs, audit, queue = scenario(refund_minor=1000, cumulative=1000)
     subs.period = None
     await case.execute(payment_event_id=1)
-    assert [e["event_name"] for e in payments.outbox] == ["refund_entitlement_reconciliation_required"]
+    assert [e["event_name"] for e in audit.events] == [
+        "refund_entitlement_reconciliation_required",
+    ]
     assert all(job[0] is not JobName.REVOKE_VPN_CONFIGURATION for job in queue.jobs)

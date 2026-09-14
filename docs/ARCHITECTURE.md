@@ -54,7 +54,7 @@ Automated tests enforce the first three rules and check the internal import grap
 - subscription activation and reconciliation;
 - VPN provisioning and revocation;
 - node-task dispatch and node status synchronization;
-- outbox publishing;
+- transactional audit recording;
 - admin operations.
 
 Use cases coordinate transactions and domain objects. They do not import FastAPI, aiogram, SQLAlchemy or concrete payment/node implementations.
@@ -107,9 +107,20 @@ ORM/persistence records are not used as domain objects. Existing migration revis
 
 Each use case obtains a Unit of Work through an injected factory. `SqlAlchemyUnitOfWork` opens one connection and transaction, constructs repositories, commits on success and rolls back on error.
 
+Lifecycle and administrative facts are appended to `audit_events` through the
+UoW-owned `AuditRepository`, so the audit fact commits or rolls back with the
+business state that produced it. The repository exposes append only, and a
+database trigger rejects `UPDATE` and `DELETE` on audit rows.
+
 External calls are made outside database transactions. Payment invoice creation is protected by a durable leased `PaymentAttempt.CREATED` claim, node requests use durable `NodeTask` leases, and legacy panel provisioning uses durable `PanelProvisionTask` leases with fenced finalization and compensation.
 
 Redis/ARQ is a disposable delivery and wake-up transport, not a source of business truth. Redis persistence is intentionally disabled; payment events and node/panel tasks remain durable in PostgreSQL. After verifying that the database schema is at the Alembic head, each worker runs one bounded startup recovery pass for received payment events and due or stale node/panel tasks. The one-minute recovery jobs then provide the regular repair loop.
+
+The legacy `outbox_events` table remains temporarily for rolling deployments.
+An `AFTER INSERT` compatibility trigger mirrors writes from old application
+replicas into `audit_events`; new replicas write only to the audit repository.
+Previously queued Redis jobs named `publish_outbox` resolve to a database-free
+`deprecated_noop` tombstone and are not scheduled by cron.
 
 ## 6. Compatibility boundaries
 

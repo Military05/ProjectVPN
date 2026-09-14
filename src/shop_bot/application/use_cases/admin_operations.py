@@ -85,7 +85,7 @@ class AdminOperations:
             if activation.subscription.id is None or activation.period.id is None:
                 raise RuntimeError("Subscription activation was not persisted")
             subscription_id = int(activation.subscription.id)
-            await uow.payments.create_outbox_event(
+            await uow.audit.append(
                 event_name="subscription_activated",
                 aggregate_type="subscription",
                 aggregate_id=subscription_id,
@@ -96,14 +96,13 @@ class AdminOperations:
                     "expires_at": activation.period.expires_at.isoformat(),
                 },
             )
-            await uow.payments.create_outbox_event(
+            await uow.audit.append(
                 event_name="payment_manually_settled",
                 aggregate_type="payment_order",
                 aggregate_id=int(order.id),
                 payload={"payment_order_id": int(order.id), "subscription_id": subscription_id},
             )
         await self.job_queue.enqueue(JobName.PROVISION_SUBSCRIPTION, subscription_id)
-        await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
         return {"payment_order_id": payment_order_id, "subscription_id": subscription_id, "status": "paid"}
 
     async def queue_provisioning(self, subscription_id: int) -> dict[str, int | str]:

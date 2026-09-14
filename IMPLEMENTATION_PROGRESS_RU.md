@@ -17,12 +17,17 @@
 - Node и panel repositories используют DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`: если параллельная запись выиграла с другим UUID/idempotency key, проигравший writer возвращает уже сохранённого владельца физической операции и не создаёт вторую identity.
 - Lookup Node VPN task стал status-agnostic и возвращает также `SUCCEEDED/FAILED/CANCELLED`. `ProvisionVpn` повторно ставит в очередь только `PENDING`, не дублирует `IN_PROGRESS`, локально финализирует `SUCCEEDED` без удалённого replay и направляет `FAILED/CANCELLED` в cleanup.
 - Конфигурация `FAILED` больше не допускает выбор другого endpoint или создание replacement: ставится durable `replacement_cleanup` через `RevokeVpn`, cleanup выполняется с прежними client UUID/inbound/endpoint, и новая конфигурация разрешается только после состояния `REVOKED`.
-- Переходы `cancel_provisioning_for_revoke()` и `request_cleanup_from_failed()` теперь атомарно переводят конфигурацию в `REVOKING/REVOKED desired` с новой generation. Успешная panel-компенсация завершает этот переход в `REVOKED`, создаёт outbox-событие и не оставляет конфигурацию зависшей.
+- Переходы `cancel_provisioning_for_revoke()` и `request_cleanup_from_failed()` теперь атомарно переводят конфигурацию в `REVOKING/REVOKED desired` с новой generation. Успешная panel-компенсация завершает этот переход в `REVOKED`, записывает audit-событие и не оставляет конфигурацию зависшей.
 - Завершён `CHANGE-05`: `SyncExpiredSubscriptions` заменён на `ReconcileSubscriptions`; старое имя сохранено только как command/worker compatibility wrapper для ранее поставленных внутренних задач, а не как активный cron-путь.
 - Reconciliation защищён PostgreSQL maintenance lease: atomic `INSERT ... ON CONFLICT ... WHERE lease_expires_at <= now RETURNING`, fenced renew/release по `(lease_name, owner_token)`, точный ответ `{"status":"already_running"}` конкурентному запуску и возобновление после истечения lease упавшего владельца.
 - Вместо трёх неограниченных full scan запросов используется один keyset/`LIMIT` `UNION ALL` только по шести классам аномалий: истечение подписки, revoke без entitlement, cleanup `FAILED`, отсутствующая VPN, repair provisioning и repair revoke. Старые full-scan repository methods удалены.
 - Размер запуска ограничен `RECONCILIATION_BATCH_SIZE × RECONCILIATION_MAX_BATCHES_PER_RUN`, lease продлевается после каждого обработанного batch. `PENDING/IN_PROGRESS` physical tasks исключены из repair-выборки и остаются под управлением собственных recovery loops; `SUCCEEDED` task с устаревшим локальным состоянием финализируется локально без нового удалённого side effect.
 - `BACKGROUND_SYNC_INTERVAL_SECONDS` теперь действительно задаёт cadence reconciliation cron; значения валидируются как точно представимые ARQ cron-интервалы. Значения batch/max-batches/lease подключены из `Settings` и перечислены в `.env.example`.
+- Завершён `CHANGE-06`: активный fake outbox удалён. Все lifecycle/admin facts записываются через отдельный `AuditRepository.append()` в `audit_events` внутри той же PostgreSQL UoW-транзакции, что и породившее их бизнес-изменение; `PaymentRepository` больше не содержит outbox API.
+- Audit log стал действительно immutable: application repository имеет только append-операцию, а миграция `20260913_0010` добавляет PostgreSQL `BEFORE UPDATE OR DELETE` trigger с ошибкой `55000`. Индексы журнала приведены к `(aggregate_type, aggregate_id, created_at DESC)` и `(event_name, created_at DESC)`.
+- Rolling compatibility сохранена: `outbox_events` пока не удаляется; `AFTER INSERT` trigger зеркалирует записи старых replica в audit log по nullable unique `legacy_outbox_event_id`, а catch-up copy запускается после установки trigger и идемпотентен через `ON CONFLICT DO NOTHING`.
+- `PublishOutbox`, outbox list/mark/reschedule state machine, `JobName.PUBLISH_OUTBOX`, producers и cron удалены. Старое ARQ-имя `publish_outbox` зарегистрировано только как database-free tombstone и всегда возвращает `{"status":"deprecated_noop"}` для уже лежащих в Redis задач.
+- Добавлен ADR `docs/adr/0001-transactional-audit-log.md`: прежний publisher только писал log и помечал строку доставленной, хотя broker/consumer/ack отсутствовали; поэтому системе нужен audit log, а не фиктивная модель доставки.
 - Завершён `CHANGE-11`: admin API для subscriptions, VPN configurations, payment orders, nodes и node tasks принимает `limit=1..200`/`offset>=0` с backward-compatible defaults `100/0`, запрашивает у repository `limit + 1`, возвращает исходный `list[...]` и заголовки `X-Page-Limit`, `X-Page-Offset`, `X-Has-More` без `COUNT(*)`.
 - Все пять paginated repository-запросов имеют стабильную сортировку с primary-key tiebreaker; admin UI использует server-side страницы по 50 записей, переходы `offset ± 50`, состояние `has_more` из response headers и явно обозначает, что показана только текущая страница.
 - Реализация `CHANGE-12` доведена на уровне кода: создание tariff/server/node/endpoint использует DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`; для node и endpoint заданы точные conflict targets, а server намеренно учитывает оба независимых уникальных ключа — имя и host.
@@ -42,6 +47,7 @@
 ## Проверено
 
 - `python -m compileall -q src tests alembic` — успешно.
+- Целевой набор `CHANGE-06`: `115 passed` — append-only repository, transactional rollback audit-факта, audit wiring всех затронутых use cases, отсутствие активной outbox state machine, rolling mirror/catch-up/immutability migration contract и database-free Redis tombstone.
 - Целевой набор `CHANGE-05`: `51 passed` — maintenance lease/owner fencing, точный concurrent result, bounded keyset batches, шесть anomaly actions, enqueue failure, lease loss, отсутствие full-scan cron, compatibility wrapper, repository SQL contract и локальное завершение `SUCCEEDED` Node/panel task без replay.
 - Целевой набор `CHANGE-04`: `70 passed` — domain transitions, Node/panel task states, terminal local recovery, cleanup-before-replacement, original endpoint/client preservation, physical-index/repository conflict contracts, same-key central retry и Node Agent ambiguous-operation recovery.
 - Целевые regression-тесты `CHANGE-12`: `10 passed`; совместно с тестами `CHANGE-11`: `28 passed`.
@@ -53,7 +59,8 @@
 - Чистая установка `dev.lock` с `--require-hashes` и целевой pytest-набор — успешно.
 - Полный `pytest -q` после `CHANGE-04`: `222 passed, 30 failed, 6 skipped`. От baseline `198 passed, 34 failed, 6 skipped` добавлено 20 новых успешных CHANGE-04 сценариев и восстановлены четыре относящиеся к operation identity проверки; новых падений нет, оставшиеся 30 унаследованы.
 - Полный `pytest -q` после `CHANGE-05`: `251 passed, 30 failed, 6 skipped`. Добавлено 29 успешных CHANGE-05 сценариев; перечень 30 унаследованных падений не изменился, новых падений нет.
-- `pip check` и `git diff --check` после `CHANGE-05` — успешно.
+- Полный `pytest -q` после `CHANGE-06`: `268 passed, 19 failed, 6 skipped`. Добавлено 6 новых проверок и восстановлено 11 старых тестов, чьи fake repositories/metadata expectations всё ещё описывали прежний outbox; новых падений нет. Оставшиеся 19 унаследованных падений относятся к route snapshots и XUI/production-settings contract, а не к `CHANGE-06`.
+- `pip check`, `git diff --check`, `alembic heads` (`20260913_0010`) и `compileall` после `CHANGE-06` — успешно.
 - В текущей среде нет Docker CLI, поэтому реальный `docker compose build --no-cache` здесь не запускался; Dockerfile contract проверен автоматическим тестом, но clean image acceptance нужно выполнить на ноутбуке.
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
@@ -61,16 +68,16 @@
 
 - Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
 - Завершить `CHANGE-07`: central journal retirement use case поверх уже существующих schema fields, partial index и authenticated Node Agent endpoint.
-- Переключить active fake outbox code на audit log, сохранив compatibility tombstone.
 - Завершить locking/capacity reservation в каждом production writer и panel equivalent.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
 - Выполнить integration tests на PostgreSQL/Redis и проверить upgrade path 0006→0007→0008→0009.
-- Исправить 30 унаследованных падений полного набора тестов перед production acceptance gate.
+- Проверить на настоящем PostgreSQL rolling upgrade до `20260913_0010`: backfill старых строк, mirror INSERT старой replica, запрет UPDATE/DELETE audit rows и сохранение `outbox_events` до будущей contract-миграции.
+- Исправить 19 унаследованных падений полного набора тестов перед production acceptance gate.
 
 Текущая ветка `main` является промежуточным checkpoint для продолжения работы, а не заявлением о полном прохождении production acceptance gate.
 
 ## Что делать в следующем промпте
 
-Следующий отдельный этап разработки — выполнить только `CHANGE-06`: заменить активный fake outbox на transactional immutable audit log, сохранить rolling compatibility trigger и tombstone для старых Redis `publish_outbox` jobs. Не повторять завершённые пункты, включая `CHANGE-04` и `CHANGE-05`.
+Следующий отдельный этап разработки — выполнить только `CHANGE-07`: завершить central journal retirement use case поверх уже существующих schema fields, partial index и authenticated Node Agent endpoint. Не повторять завершённые пункты, включая `CHANGE-04`, `CHANGE-05` и `CHANGE-06`.
 
-После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `251 passed, 30 failed, 6 skipped`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md`.
+После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `268 passed, 19 failed, 6 skipped`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache`, шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md` и реальный rolling-upgrade smoke миграции `20260913_0010`.

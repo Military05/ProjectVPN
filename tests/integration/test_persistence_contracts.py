@@ -24,6 +24,8 @@ EXPECTED_TABLES = {
     "provider_transactions",
     "webhook_inbox",
     "outbox_events",
+    "audit_events",
+    "maintenance_leases",
     "panel_provision_tasks",
     "panel_revoke_tasks",
     "nodes",

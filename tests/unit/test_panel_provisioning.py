@@ -55,7 +55,7 @@ class ProvisionState:
         self.configs: list[VpnConfiguration] = []
         self.node_tasks: dict[str, NodeTask] = {}
         self.panel_tasks: dict[int, PanelProvisionTask] = {}
-        self.outbox: list[dict[str, Any]] = []
+        self.audit_events: list[dict[str, Any]] = []
         self.lock = asyncio.Lock()
         self.first_locked = asyncio.Event()
         self.release_first = asyncio.Event()
@@ -153,13 +153,13 @@ class ProvisionServers:
         return self.state.endpoint
 
 
-class ProvisionPayments:
+class ProvisionAudit:
     def __init__(self, state: ProvisionState) -> None:
         self.state = state
 
-    async def create_outbox_event(self, **payload: Any) -> int:
-        self.state.outbox.append(payload)
-        return len(self.state.outbox)
+    async def append(self, **payload: Any) -> int:
+        self.state.audit_events.append(payload)
+        return len(self.state.audit_events)
 
 
 class ProvisionUow:
@@ -170,7 +170,7 @@ class ProvisionUow:
         self.vpn = ProvisionVpnRepo(state)
         self.nodes = ProvisionNodes(state)
         self.servers = ProvisionServers(state)
-        self.payments = ProvisionPayments(state)
+        self.audit = ProvisionAudit(state)
 
     async def __aenter__(self) -> "ProvisionUow":
         return self
@@ -332,10 +332,10 @@ async def test_succeeded_provision_operation_recovers_locally_without_remote_rep
     )
     assert state.endpoint_selection_calls == 0
     assert len(state.node_tasks) + len(state.panel_tasks) == 1
-    assert [event["event_name"] for event in state.outbox] == [
+    assert [event["event_name"] for event in state.audit_events] == [
         "vpn_configuration_activated"
     ]
-    assert queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+    assert queue.jobs == []
 
 
 @pytest.mark.asyncio
@@ -447,7 +447,7 @@ class DispatchState:
         self.task.id = 11
         self.configuration = VpnConfiguration(1, 1, 7, CLIENT_UUID, "vpn-1", VpnConfigurationStatus.PROVISIONING)
         self.period: SubscriptionPeriod | None = SubscriptionPeriod(1, 1, NOW - timedelta(days=1), NOW + timedelta(days=1), True, NOW - timedelta(days=1))
-        self.outbox: list[dict[str, Any]] = []
+        self.audit_events: list[dict[str, Any]] = []
         self.uow_count = 0
         self.fail_commit_numbers: set[int] = set()
 
@@ -496,13 +496,13 @@ class DispatchSubscriptions:
         return copy.deepcopy(self.state.period)
 
 
-class DispatchPayments:
+class DispatchAudit:
     def __init__(self, uow: "DispatchUow") -> None:
         self.uow = uow
 
-    async def create_outbox_event(self, **payload: Any) -> int:
-        self.uow.outbox_view.append(copy.deepcopy(payload))
-        return len(self.uow.outbox_view)
+    async def append(self, **payload: Any) -> int:
+        self.uow.audit_view.append(copy.deepcopy(payload))
+        return len(self.uow.audit_view)
 
 
 class DispatchUow:
@@ -511,10 +511,10 @@ class DispatchUow:
         self.number = number
         self.task_view = copy.deepcopy(state.task)
         self.config_view = copy.deepcopy(state.configuration)
-        self.outbox_view = copy.deepcopy(state.outbox)
+        self.audit_view = copy.deepcopy(state.audit_events)
         self.vpn = DispatchVpnRepo(state, self)
         self.subscriptions = DispatchSubscriptions(state)
-        self.payments = DispatchPayments(self)
+        self.audit = DispatchAudit(self)
 
     async def __aenter__(self) -> "DispatchUow":
         return self
@@ -526,7 +526,7 @@ class DispatchUow:
             raise RuntimeError("simulated local commit failure")
         self.state.task = self.task_view
         self.state.configuration = self.config_view
-        self.state.outbox = self.outbox_view
+        self.state.audit_events = self.audit_view
 
 
 class DispatchUowFactory:
@@ -569,7 +569,7 @@ def dispatcher(state: DispatchState, gateway: PanelGatewaySpy, queue: Queue | No
 
 
 @pytest.mark.asyncio
-async def test_panel_dispatch_success_is_fenced_and_activates_with_outbox() -> None:
+async def test_panel_dispatch_success_is_fenced_and_appends_audit_event() -> None:
     state = DispatchState()
     gateway = PanelGatewaySpy(state)
     result = await dispatcher(state, gateway).execute(panel_task_id=11)
@@ -577,7 +577,7 @@ async def test_panel_dispatch_success_is_fenced_and_activates_with_outbox() -> N
     assert len(gateway.provisions) == 1
     assert state.task.status is PanelProvisionTaskStatus.SUCCEEDED
     assert state.configuration.status is VpnConfigurationStatus.ACTIVE
-    assert state.outbox[0]["event_name"] == "vpn_configuration_activated"
+    assert state.audit_events[0]["event_name"] == "vpn_configuration_activated"
 
 
 @pytest.mark.asyncio
@@ -592,6 +592,7 @@ async def test_remote_success_local_commit_failure_triggers_same_client_compensa
     assert gateway.revokes[0]["client_uuid"] == gateway.provisions[0]["client_uuid"] == str(CLIENT_UUID)
     assert state.task.status is not PanelProvisionTaskStatus.SUCCEEDED
     assert state.configuration.status is VpnConfigurationStatus.PROVISIONING
+    assert state.audit_events == []
 
 
 @pytest.mark.asyncio
@@ -648,10 +649,10 @@ async def test_access_expiring_during_remote_provision_is_compensated_and_never_
     assert state.configuration.desired_state is VpnDesiredState.REVOKED
     assert state.configuration.generation == 2
     assert state.task.status is PanelProvisionTaskStatus.CANCELLED
-    assert [event["event_name"] for event in state.outbox] == [
+    assert [event["event_name"] for event in state.audit_events] == [
         "vpn_configuration_revoked"
     ]
-    assert queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+    assert queue.jobs == []
 
 
 @pytest.mark.asyncio

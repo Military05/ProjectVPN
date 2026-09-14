@@ -34,6 +34,7 @@ from shop_bot.infrastructure.persistence.sqlalchemy.schema import assert_schema_
 
 
 STARTUP_RECOVERY_LIMIT = 100
+LEGACY_PUBLISH_OUTBOX_JOB_NAME = "publish_outbox"
 
 
 async def startup(ctx: dict) -> None:
@@ -145,6 +146,8 @@ async def reconcile_subscriptions_job(ctx: dict) -> dict:
 
 
 async def publish_outbox_job(ctx: dict) -> dict:
+    """Compatibility tombstone; it must never touch PostgreSQL state."""
+
     return dict(await publish_outbox_events(ctx["container"]))
 
 
@@ -189,7 +192,7 @@ class WorkerSettings:
         sync_node_status_job,
         reconcile_subscriptions_job,
         sync_expired_subscriptions_job,
-        func(publish_outbox_job, name=JobName.PUBLISH_OUTBOX.value),
+        func(publish_outbox_job, name=LEGACY_PUBLISH_OUTBOX_JOB_NAME),
         recover_payment_events_job,
     ]
     on_startup = startup
@@ -203,7 +206,6 @@ class WorkerSettings:
             reconcile_subscriptions_job,
             **reconciliation_cron_kwargs(settings.background_sync_interval_seconds),
         ),
-        cron(publish_outbox_job, minute={1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56}),
         cron(sync_node_status_job, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}),
         cron(dispatch_due_node_tasks_job, minute=set(range(60))),
         cron(recover_stale_node_tasks_job, minute=set(range(60))),

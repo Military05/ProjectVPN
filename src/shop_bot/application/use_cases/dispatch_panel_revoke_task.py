@@ -36,9 +36,7 @@ class DispatchPanelRevokeTask:
             await self.panel_gateway.revoke(prepared.payload)
         except Exception as exc:
             return await self._finalize_failure(prepared, exc)
-        status, publish = await self._finalize_success(prepared)
-        if publish:
-            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
+        status = await self._finalize_success(prepared)
         return {"status": status, "panel_revoke_task_id": prepared.task_id}
 
     async def dispatch_due(self, *, limit: int = 100) -> dict[str, int]:
@@ -100,23 +98,23 @@ class DispatchPanelRevokeTask:
                 payload=dict(task.payload),
             )
 
-    async def _finalize_success(self, prepared: PreparedPanelRevoke) -> tuple[str, bool]:
+    async def _finalize_success(self, prepared: PreparedPanelRevoke) -> str:
         now = self.clock()
         async with self.uow_factory() as uow:
             task = await uow.vpn.get_panel_revoke_task_entity(prepared.task_id, for_update=True)
             if task is None:
-                return "missing", False
+                return "missing"
             if not task.owns_active_lease(
                 token=prepared.lease_token,
                 attempt_no=prepared.attempt_no,
                 now=now,
             ):
-                return "stale_attempt", False
+                return "stale_attempt"
             configuration = await uow.vpn.get_entity(task.vpn_configuration_id, for_update=True)
             task.complete(now=now)
             await uow.vpn.save_panel_revoke_task_entity(task)
             if configuration is None:
-                return "succeeded", False
+                return "succeeded"
             if (
                 task.vpn_generation == configuration.generation
                 and configuration.desired_state is VpnDesiredState.REVOKED
@@ -124,14 +122,13 @@ class DispatchPanelRevokeTask:
             ):
                 configuration.revoke(now)
                 await uow.vpn.save_entity(configuration)
-                await uow.payments.create_outbox_event(
+                await uow.audit.append(
                     event_name="vpn_configuration_revoked",
                     aggregate_type="vpn_configuration",
                     aggregate_id=task.vpn_configuration_id,
                     payload={"vpn_configuration_id": task.vpn_configuration_id},
                 )
-                return "succeeded", True
-            return "succeeded", False
+            return "succeeded"
 
     async def _finalize_failure(
         self, prepared: PreparedPanelRevoke, error: Exception

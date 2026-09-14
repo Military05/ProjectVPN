@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from shop_bot.application.commands.publish_outbox_events import publish_outbox_events
 from shop_bot.application.commands.recover_payment_events import recover_payment_events
 from shop_bot.application.job_names import JobName
-from shop_bot.application.use_cases.publish_outbox import PublishOutbox
-
-NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 
 
 class Queue:
@@ -45,35 +42,15 @@ async def test_received_payment_recovery_requeues_durable_events() -> None:
     ]
 
 
-class OutboxPayments:
-    def __init__(self) -> None:
-        self.rescheduled: list[tuple[int, str, datetime]] = []
-        self.published: list[int] = []
-        self.fail_once = True
-
-    async def list_pending_outbox_events(self, now: datetime, limit: int = 100):
-        assert now == NOW and limit == 100
-        return [{"outbox_event_id": 5, "event_name": "x", "aggregate_type": "order", "aggregate_id": 1}]
-
-    async def mark_outbox_published(self, event_id: int, published_at: datetime) -> None:
-        if self.fail_once:
-            self.fail_once = False
-            raise RuntimeError("temporary persistence failure")
-        self.published.append(event_id)
-
-    async def reschedule_outbox_event(self, event_id: int, error: str, available_at: datetime) -> None:
-        self.rescheduled.append((event_id, error, available_at))
-
-
-class OutboxUow:
-    def __init__(self, repo: OutboxPayments): self.payments = repo
-    async def __aenter__(self): return self
-    async def __aexit__(self, *args): return None
+class PoisonContainer:
+    def __getattribute__(self, name: str) -> Any:
+        if name.startswith("__"):
+            return super().__getattribute__(name)
+        raise AssertionError(f"legacy tombstone touched container.{name}")
 
 
 @pytest.mark.asyncio
-async def test_outbox_failure_is_rescheduled_instead_of_becoming_stuck() -> None:
-    repo = OutboxPayments()
-    use_case = PublishOutbox(uow_factory=lambda: OutboxUow(repo), clock=lambda: NOW)
-    assert await use_case.execute() == {"published": 0}
-    assert repo.rescheduled == [(5, "temporary persistence failure", NOW + timedelta(minutes=5))]
+async def test_stale_publish_outbox_job_is_database_free_deprecated_noop() -> None:
+    assert await publish_outbox_events(PoisonContainer()) == {
+        "status": "deprecated_noop"
+    }

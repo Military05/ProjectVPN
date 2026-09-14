@@ -41,7 +41,6 @@ class ReconcileSubscriptions:
 
         result = self._empty_result()
         cursor = (0, 0)
-        publish_outbox = False
         try:
             for _ in range(self.max_batches_per_run):
                 batch_now = self.clock()
@@ -60,7 +59,6 @@ class ReconcileSubscriptions:
                     if anomaly.kind is ReconciliationAnomalyKind.EXPIRE_SUBSCRIPTION:
                         if await self._expire_subscription(anomaly.entity_id, batch_now):
                             result["expired_subscriptions"] += 1
-                            publish_outbox = True
                         continue
                     try:
                         await self._enqueue_anomaly(anomaly)
@@ -85,11 +83,6 @@ class ReconcileSubscriptions:
                 if len(anomalies) < self.batch_size:
                     break
 
-            if publish_outbox:
-                try:
-                    await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
-                except Exception:
-                    result["enqueue_failures"] += 1
         finally:
             async with self.uow_factory() as uow:
                 await uow.maintenance.release_lease(
@@ -114,7 +107,7 @@ class ReconcileSubscriptions:
                 return False
             subscription.expire(now)
             await uow.subscriptions.save_entity(subscription)
-            await uow.payments.create_outbox_event(
+            await uow.audit.append(
                 event_name="subscription_ended",
                 aggregate_type="subscription",
                 aggregate_id=subscription_id,

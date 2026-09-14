@@ -97,12 +97,17 @@ class FakePaymentRepository:
             provider_payment_id="dummy-22",
         )
         self.transactions: list[dict[str, Any]] = []
-        self.outbox: list[dict[str, Any]] = []
 
     async def get_event_entity(self, event_id: int, *, for_update: bool = False) -> PaymentEvent | None:
         return self.event if event_id == self.event.id else None
 
-    async def get_attempt_entity(self, attempt_id: int) -> PaymentAttempt | None:
+    async def get_attempt_entity(
+        self,
+        attempt_id: int,
+        *,
+        for_update: bool = False,
+    ) -> PaymentAttempt | None:
+        del for_update
         return self.attempt if attempt_id == self.attempt.id else None
 
     async def get_latest_attempt_entity(self, order_id: int) -> PaymentAttempt | None:
@@ -123,15 +128,22 @@ class FakePaymentRepository:
     async def create_provider_transaction(self, **payload: Any) -> None:
         self.transactions.append(payload)
 
-    async def create_outbox_event(self, **payload: Any) -> int:
-        self.outbox.append(payload)
-        return len(self.outbox)
+
+
+class FakeAuditRepository:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    async def append(self, **payload: Any) -> int:
+        self.events.append(payload)
+        return len(self.events)
 
 
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.payments = FakePaymentRepository()
         self.subscriptions = FakeSubscriptionRepository()
+        self.audit = FakeAuditRepository()
 
     async def __aenter__(self) -> "FakeUnitOfWork":
         return self
@@ -187,11 +199,8 @@ async def test_paid_payment_activates_subscription_and_queues_vpn() -> None:
     assert uow.payments.transactions[0]["transaction_status"] == "paid"
     assert uow.payments.transactions[0]["amount_minor"] == 9900
     assert uow.payments.transactions[0]["currency"] == "RUB"
-    assert uow.payments.outbox[0]["event_name"] == "subscription_activated"
-    assert queue.jobs == [
-        ("provision_subscription", (101,)),
-        ("publish_outbox", ()),
-    ]
+    assert uow.audit.events[0]["event_name"] == "subscription_activated"
+    assert queue.jobs == [("provision_subscription", (101,))]
 
 
 @pytest.mark.asyncio
@@ -241,7 +250,7 @@ async def test_paid_payment_invariant_failure_has_no_success_side_effects(mutati
     assert uow.payments.event.status is PaymentEventStatus.FAILED
     assert uow.subscriptions.active is None
     assert uow.payments.transactions == []
-    assert uow.payments.outbox == []
+    assert uow.audit.events == []
     assert queue.jobs == []
 
 
@@ -284,4 +293,4 @@ async def test_duplicate_valid_paid_event_does_not_activate_twice() -> None:
     assert second == {"status": "processed"}
     assert len(uow.subscriptions.periods) == 1
     assert len(uow.payments.transactions) == 1
-    assert len(uow.payments.outbox) == 1
+    assert len(uow.audit.events) == 1

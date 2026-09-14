@@ -48,7 +48,7 @@ class State:
         self.node_id = node_id
         self.node_tasks: list[NodeTask] = []
         self.panel_tasks: list[PanelRevokeTask] = []
-        self.outbox: list[dict[str, Any]] = []
+        self.audit_events: list[dict[str, Any]] = []
         self.saved_subscriptions = 0
         self.saved_configs = 0
         self.lock_order: list[str] = []
@@ -138,13 +138,13 @@ class Nodes:
         return task
 
 
-class Payments:
+class Audit:
     def __init__(self, state: State) -> None:
         self.state = state
 
-    async def create_outbox_event(self, **payload: Any) -> int:
-        self.state.outbox.append(payload)
-        return len(self.state.outbox)
+    async def append(self, **payload: Any) -> int:
+        self.state.audit_events.append(payload)
+        return len(self.state.audit_events)
 
 
 class Maintenance:
@@ -211,7 +211,7 @@ class Uow:
         self.subscriptions = Subscriptions(state)
         self.vpn = VpnRepo(state)
         self.nodes = Nodes(state)
-        self.payments = Payments(state)
+        self.audit = Audit(state)
         self.maintenance = Maintenance(state)
 
     async def __aenter__(self) -> "Uow":
@@ -248,7 +248,7 @@ async def test_subscription_renewed_during_expiration_sync_is_not_ended() -> Non
     assert result["expired_subscriptions"] == 0
     assert state.subscription.status is SubscriptionStatus.ACTIVE
     assert state.saved_subscriptions == 0
-    assert state.outbox == []
+    assert state.audit_events == []
     assert (JobName.REVOKE_VPN_CONFIGURATION, (7, "expiration")) in queue.jobs
 
 
@@ -263,7 +263,7 @@ async def test_actual_expired_count_tracks_real_transitions_not_candidates() -> 
     assert result["expired_subscriptions"] == 1
     assert state.subscription.status is SubscriptionStatus.ENDED
     assert state.saved_subscriptions == 1
-    assert [event["event_name"] for event in state.outbox] == ["subscription_ended"]
+    assert [event["event_name"] for event in state.audit_events] == ["subscription_ended"]
 
 
 @pytest.mark.asyncio
@@ -351,10 +351,10 @@ async def test_reconciliation_locally_finalizes_succeeded_node_revoke_without_re
     assert result == {"status": "revoked", "vpn_configuration_id": 7}
     assert state.config.status is VpnConfigurationStatus.REVOKED
     assert len(state.node_tasks) == 1
-    assert [event["event_name"] for event in state.outbox] == [
+    assert [event["event_name"] for event in state.audit_events] == [
         "vpn_configuration_revoked"
     ]
-    assert recovery_queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+    assert recovery_queue.jobs == []
 
 
 @pytest.mark.asyncio
@@ -388,10 +388,10 @@ async def test_reconciliation_locally_finalizes_succeeded_panel_revoke_without_r
     assert result == {"status": "revoked", "vpn_configuration_id": 7}
     assert state.config.status is VpnConfigurationStatus.REVOKED
     assert len(state.panel_tasks) == 1
-    assert [event["event_name"] for event in state.outbox] == [
+    assert [event["event_name"] for event in state.audit_events] == [
         "vpn_configuration_revoked"
     ]
-    assert recovery_queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+    assert recovery_queue.jobs == []
 
 
 @pytest.mark.asyncio

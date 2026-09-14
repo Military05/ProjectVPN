@@ -18,7 +18,6 @@ from shop_bot.application.use_cases import (
     NodeAdministration,
     ProcessPayment,
     ProvisionVpn,
-    PublishOutbox,
     ReconcileSubscriptions,
     RegisterBotUser,
     RevokeVpn,
@@ -48,7 +47,6 @@ class ApplicationServices:
     dispatch_panel_revoke_task: DispatchPanelRevokeTask
     reconcile_subscriptions: ReconcileSubscriptions
     sync_node_status: SyncNodeStatus
-    publish_outbox: PublishOutbox
 
 
 @dataclass(slots=True)
@@ -129,7 +127,6 @@ def _build_application_services(
         create_payment=CreatePayment(
             uow_factory=uow_factory,
             payment_registry=payment_registry,
-            job_queue=job_queue,
             default_provider=settings.payment_default_provider,
             return_url=str(settings.payment_return_url),
             creation_lease_seconds=settings.payment_invoice_creation_lease_seconds,
@@ -195,7 +192,6 @@ def _build_application_services(
         ),
         reconcile_subscriptions=reconcile_subscriptions,
         sync_node_status=sync_node_status,
-        publish_outbox=PublishOutbox(uow_factory=uow_factory, clock=utcnow),
     )
     queries = ApplicationQueries(
         bot=BotQueryService(uow_factory=uow_factory, builder=VlessUriBuilder(), clock=utcnow),

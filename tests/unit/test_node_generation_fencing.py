@@ -20,7 +20,7 @@ class State:
     def __init__(self, config: VpnConfiguration) -> None:
         self.config = config
         self.tasks: list[NodeTask] = []
-        self.outbox: list[dict[str, Any]] = []
+        self.audit_events: list[dict[str, Any]] = []
         self.period: SubscriptionPeriod | None = SubscriptionPeriod(
             1, 1, NOW - timedelta(days=1), NOW + timedelta(days=1), True, NOW - timedelta(days=1)
         )
@@ -64,13 +64,13 @@ class Subscriptions:
         return self.state.period
 
 
-class Payments:
+class Audit:
     def __init__(self, state: State) -> None:
         self.state = state
 
-    async def create_outbox_event(self, **payload: Any) -> int:
-        self.state.outbox.append(payload)
-        return len(self.state.outbox)
+    async def append(self, **payload: Any) -> int:
+        self.state.audit_events.append(payload)
+        return len(self.state.audit_events)
 
 
 class Uow:
@@ -78,7 +78,7 @@ class Uow:
         self.vpn = VpnRepo(state)
         self.nodes = Nodes(state)
         self.subscriptions = Subscriptions(state)
-        self.payments = Payments(state)
+        self.audit = Audit(state)
 
 
 class Gateway:
@@ -156,7 +156,7 @@ async def test_late_provision_after_succeeded_revoke_creates_fresh_compensation_
 
     assert state.config.status is VpnConfigurationStatus.REVOKED
     assert state.config.generation == 2
-    assert state.outbox == []
+    assert state.audit_events == []
     assert result.follow_up_task_id == 100
     assert len(state.tasks) == 1
     compensation = state.tasks[0]
@@ -240,12 +240,12 @@ async def test_revoke_success_only_transitions_current_generation() -> None:
     )
     result = await dispatcher(current)._complete_revoke(Uow(current), task=task, remote_status="revoked", completed_at=NOW)
     assert current.config.status is VpnConfigurationStatus.REVOKED
-    assert result.publish_outbox is True
-    assert [e["event_name"] for e in current.outbox] == ["vpn_configuration_revoked"]
+    assert result.status == "revoked"
+    assert [e["event_name"] for e in current.audit_events] == ["vpn_configuration_revoked"]
 
     stale = State(config(status=VpnConfigurationStatus.REVOKING, desired=VpnDesiredState.REVOKED, generation=3))
     stale_result = await dispatcher(stale)._complete_revoke(Uow(stale), task=task, remote_status="revoked", completed_at=NOW)
     assert stale.config.status is VpnConfigurationStatus.REVOKING
     assert stale.config.generation == 3
-    assert stale_result.publish_outbox is False
-    assert stale.outbox == []
+    assert stale_result.status == "revoked"
+    assert stale.audit_events == []

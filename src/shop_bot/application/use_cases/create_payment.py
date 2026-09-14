@@ -5,8 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
-from shop_bot.application.job_names import JobName
-from shop_bot.application.ports import JobQueue, PaymentGatewayRegistry, UnitOfWorkFactory
+from shop_bot.application.ports import PaymentGatewayRegistry, UnitOfWorkFactory
 from shop_bot.core.exceptions import ConflictError, NotFoundError, ValidationError
 from shop_bot.domain.entities.payment import PaymentAttempt, PaymentOrder, PaymentStatus
 from shop_bot.domain.payments.models import PaymentIntent
@@ -25,7 +24,6 @@ class PreparedPaymentOrder:
 class CreatePayment:
     uow_factory: UnitOfWorkFactory
     payment_registry: PaymentGatewayRegistry
-    job_queue: JobQueue
     default_provider: str
     return_url: str
     creation_lease_seconds: int = 30
@@ -76,7 +74,6 @@ class CreatePayment:
             lease_token=token,
             intent=intent,
         )
-        await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
         return self._response(prepared.order, prepared.tariff_name, attempt)
 
     async def _prepare_order(

@@ -69,7 +69,6 @@ class ProvisionVpn:
                 "vpn_configuration_id": plan.vpn_configuration_id,
             }
         if isinstance(plan, ProvisionRecoveryPlan):
-            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
             return {
                 "status": "active",
                 "vpn_configuration_id": plan.vpn_configuration_id,
@@ -303,7 +302,7 @@ class ProvisionVpn:
             raise RuntimeError("Persisted VPN configuration has no id")
         configuration.activate(remote_client_ref)
         await uow.vpn.save_entity(configuration)
-        await uow.payments.create_outbox_event(
+        await uow.audit.append(
             event_name="vpn_configuration_activated",
             aggregate_type="vpn_configuration",
             aggregate_id=configuration.id,
@@ -353,7 +352,7 @@ class ProvisionVpn:
         configuration = await uow.vpn.add_entity(prepared.configuration)
         if configuration.id is None:
             raise RuntimeError("VPN configuration was not persisted")
-        await uow.payments.create_outbox_event(
+        await uow.audit.append(
             event_name="vpn_configuration_created",
             aggregate_type="vpn_configuration",
             aggregate_id=configuration.id,

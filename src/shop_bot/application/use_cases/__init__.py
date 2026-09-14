@@ -8,7 +8,6 @@ from shop_bot.application.use_cases.ingest_webhook import IngestWebhook
 from shop_bot.application.use_cases.node_administration import NodeAdministration
 from shop_bot.application.use_cases.process_payment import ProcessPayment
 from shop_bot.application.use_cases.provision_vpn import ProvisionVpn
-from shop_bot.application.use_cases.publish_outbox import PublishOutbox
 from shop_bot.application.use_cases.register_user import RegisterBotUser
 from shop_bot.application.use_cases.revoke_vpn import RevokeVpn
 from shop_bot.application.use_cases.sync_nodes import SyncNodeStatus
@@ -25,7 +24,6 @@ __all__ = [
     "NodeAdministration",
     "ProcessPayment",
     "ProvisionVpn",
-    "PublishOutbox",
     "RegisterBotUser",
     "ReconcileSubscriptions",
     "RevokeVpn",

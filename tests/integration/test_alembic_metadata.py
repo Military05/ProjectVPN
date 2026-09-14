@@ -17,6 +17,8 @@ def test_required_tables_exist_in_metadata() -> None:
         "provider_transactions",
         "webhook_inbox",
         "outbox_events",
+        "audit_events",
+        "maintenance_leases",
         "panel_provision_tasks",
         "tariff_specs",
         "nodes",
@@ -40,3 +42,22 @@ def test_payment_claim_and_panel_task_fields_are_in_metadata() -> None:
     assert {"creation_claimed_at", "creation_lease_expires_at", "creation_lease_token"}.issubset(payment_attempts.c.keys())
     panel_tasks = metadata.tables["panel_provision_tasks"]
     assert {"lease_token", "lease_expires_at", "compensation_required"}.issubset(panel_tasks.c.keys())
+
+
+def test_audit_log_metadata_is_append_only_shaped_and_keeps_legacy_outbox() -> None:
+    audit_events = metadata.tables["audit_events"]
+    assert set(audit_events.c.keys()) == {
+        "audit_event_id",
+        "event_name",
+        "aggregate_type",
+        "aggregate_id",
+        "payload",
+        "created_at",
+        "legacy_outbox_event_id",
+    }
+    assert audit_events.c.legacy_outbox_event_id.unique is True
+    assert {index.name for index in audit_events.indexes} == {
+        "idx_audit_events_aggregate",
+        "idx_audit_events_name_created",
+    }
+    assert "outbox_events" in metadata.tables

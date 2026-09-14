@@ -8,4 +8,3 @@ class JobName(StrEnum):
     DISPATCH_NODE_TASK = "dispatch_node_task"
     DISPATCH_PANEL_PROVISION_TASK = "dispatch_panel_provision_task"
     DISPATCH_PANEL_REVOKE_TASK = "dispatch_panel_revoke_task"
-    PUBLISH_OUTBOX = "publish_outbox"

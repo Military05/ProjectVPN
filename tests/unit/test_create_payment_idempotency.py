@@ -174,14 +174,6 @@ class Registry:
         return self.gateways[provider]
 
 
-class Queue:
-    def __init__(self) -> None:
-        self.jobs: list[tuple[Any, tuple[Any, ...]]] = []
-
-    async def enqueue(self, job_name: Any, *args: Any) -> None:
-        self.jobs.append((job_name, args))
-
-
 def make_use_case(
     *, state: SharedPaymentState | None = None, tariffs: dict[int, Tariff] | None = None, users: dict[int, int] | None = None
 ) -> tuple[CreatePayment, SharedPaymentState, Gateway, Registry]:
@@ -193,7 +185,6 @@ def make_use_case(
     use_case = CreatePayment(
         uow_factory=UowFactory(state, user_repo, FakeAdmin(tariff_map)),
         payment_registry=registry,
-        job_queue=Queue(),
         default_provider="yookassa",
         return_url="https://merchant.example/return",
         creation_lease_seconds=30,

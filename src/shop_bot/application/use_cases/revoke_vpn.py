@@ -56,7 +56,6 @@ class RevokeVpn:
             now=now,
         )
         if isinstance(plan, RevokeRecoveryPlan):
-            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
             return {
                 "status": "revoked",
                 "vpn_configuration_id": plan.vpn_configuration_id,
@@ -260,7 +259,7 @@ class RevokeVpn:
             raise RuntimeError("Persisted VPN configuration has no id")
         configuration.revoke(now)
         await uow.vpn.save_entity(configuration)
-        await uow.payments.create_outbox_event(
+        await uow.audit.append(
             event_name="vpn_configuration_revoked",
             aggregate_type="vpn_configuration",
             aggregate_id=configuration.id,

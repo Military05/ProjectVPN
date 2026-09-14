@@ -15,7 +15,6 @@ from shop_bot.infrastructure.persistence.sqlalchemy.mappers import (
     payment_order_from_row,
 )
 from shop_bot.infrastructure.persistence.sqlalchemy.tables import (
-    outbox_events,
     payment_attempts,
     payment_events,
     payment_orders,
@@ -396,51 +395,6 @@ class PaymentRepository:
             )
         )
         return int(result.scalar_one())
-
-    async def create_outbox_event(
-        self,
-        *,
-        event_name: str,
-        aggregate_type: str,
-        aggregate_id: int,
-        payload: dict[str, Any],
-        status: str = "pending",
-    ) -> int:
-        result = await self.connection.execute(
-            outbox_events.insert()
-            .values(
-                event_name=event_name,
-                aggregate_type=aggregate_type,
-                aggregate_id=aggregate_id,
-                payload=payload,
-                status=status,
-            )
-            .returning(outbox_events.c.outbox_event_id)
-        )
-        return int(result.scalar_one())
-
-    async def list_pending_outbox_events(self, now: datetime, limit: int = 100) -> list[Mapping[str, Any]]:
-        result = await self.connection.execute(
-            select(outbox_events)
-            .where(outbox_events.c.status == "pending", outbox_events.c.available_at <= now)
-            .order_by(outbox_events.c.available_at.asc())
-            .limit(limit)
-        )
-        return list(result.mappings().all())
-
-    async def mark_outbox_published(self, outbox_event_id: int, published_at: datetime) -> None:
-        await self.connection.execute(
-            update(outbox_events)
-            .where(outbox_events.c.outbox_event_id == outbox_event_id)
-            .values(status="published", published_at=published_at)
-        )
-
-    async def reschedule_outbox_event(self, outbox_event_id: int, last_error: str, available_at: datetime) -> None:
-        await self.connection.execute(
-            update(outbox_events)
-            .where(outbox_events.c.outbox_event_id == outbox_event_id)
-            .values(status="pending", attempts=outbox_events.c.attempts + 1, last_error=last_error, available_at=available_at)
-        )
 
     async def get_order_entity(self, order_id: int, *, for_update: bool = False) -> PaymentOrder | None:
         row = await self.get_order(order_id, for_update=for_update)

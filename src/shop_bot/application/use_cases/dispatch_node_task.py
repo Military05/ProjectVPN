@@ -27,7 +27,6 @@ class PreparedDispatch:
 class DispatchFinalization:
     status: str
     follow_up_task_id: int | None = None
-    publish_outbox: bool = False
 
 
 @dataclass(slots=True)
@@ -53,8 +52,6 @@ class DispatchNodeTask:
         )
         if finalization.follow_up_task_id is not None:
             await self.job_queue.enqueue(JobName.DISPATCH_NODE_TASK, finalization.follow_up_task_id)
-        if finalization.publish_outbox:
-            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
         return {"status": finalization.status, "node_task_id": node_task_id}
 
     async def dispatch_due(self, *, limit: int = 100) -> dict[str, Any]:
@@ -341,7 +338,7 @@ class DispatchNodeTask:
         if current_operation and current_period is not None:
             configuration.activate(task.remote_client_ref)
             await uow.vpn.save_entity(configuration)
-            await uow.payments.create_outbox_event(
+            await uow.audit.append(
                 event_name="vpn_configuration_activated",
                 aggregate_type="vpn_configuration",
                 aggregate_id=task.vpn_configuration_id,
@@ -350,7 +347,7 @@ class DispatchNodeTask:
                     "subscription_id": task.subscription_id,
                 },
             )
-            return DispatchFinalization(status=remote_status, publish_outbox=True)
+            return DispatchFinalization(status=remote_status)
 
         if current_operation and current_period is None:
             configuration.cancel_provisioning_for_revoke()
@@ -388,13 +385,13 @@ class DispatchNodeTask:
         ):
             configuration.revoke(completed_at)
             await uow.vpn.save_entity(configuration)
-            await uow.payments.create_outbox_event(
+            await uow.audit.append(
                 event_name="vpn_configuration_revoked",
                 aggregate_type="vpn_configuration",
                 aggregate_id=task.vpn_configuration_id,
                 payload={"vpn_configuration_id": task.vpn_configuration_id},
             )
-            return DispatchFinalization(status=remote_status, publish_outbox=True)
+            return DispatchFinalization(status=remote_status)
         # Cleanup success or a stale generation is a successful remote outcome but
         # must never rewrite newer local intent or emit duplicate lifecycle events.
         return DispatchFinalization(status=remote_status)

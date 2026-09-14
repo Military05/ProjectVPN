@@ -109,13 +109,13 @@ class Subscriptions:
         self.saved.append(subscription.id)
 
 
-class Payments:
+class Audit:
     def __init__(self) -> None:
-        self.outbox: list[dict[str, Any]] = []
+        self.events: list[dict[str, Any]] = []
 
-    async def create_outbox_event(self, **kwargs: Any) -> int:
-        self.outbox.append(kwargs)
-        return len(self.outbox)
+    async def append(self, **kwargs: Any) -> int:
+        self.events.append(kwargs)
+        return len(self.events)
 
 
 class Uow:
@@ -123,11 +123,11 @@ class Uow:
         self,
         maintenance: Maintenance,
         subscriptions: Subscriptions,
-        payments: Payments,
+        audit: Audit,
     ) -> None:
         self.maintenance = maintenance
         self.subscriptions = subscriptions
-        self.payments = payments
+        self.audit = audit
 
     async def __aenter__(self) -> "Uow":
         return self
@@ -150,12 +150,12 @@ def use_case(
     *,
     batch_size: int = 500,
     max_batches: int = 4,
-) -> tuple[ReconcileSubscriptions, Subscriptions, Payments]:
+) -> tuple[ReconcileSubscriptions, Subscriptions, Audit]:
     subscriptions = Subscriptions()
-    payments = Payments()
+    audit = Audit()
     return (
         ReconcileSubscriptions(
-            uow_factory=lambda: Uow(maintenance, subscriptions, payments),
+            uow_factory=lambda: Uow(maintenance, subscriptions, audit),
             job_queue=queue,
             clock=lambda: NOW,
             batch_size=batch_size,
@@ -164,7 +164,7 @@ def use_case(
             owner_token_factory=lambda: OWNER_TOKEN,
         ),
         subscriptions,
-        payments,
+        audit,
     )
 
 
@@ -216,7 +216,7 @@ async def test_all_anomaly_classes_dispatch_only_their_surgical_action() -> None
         ]
     )
     queue = Queue()
-    case, subscriptions, payments = use_case(maintenance, queue)
+    case, subscriptions, audit = use_case(maintenance, queue)
 
     result = await case.execute()
 
@@ -228,14 +228,13 @@ async def test_all_anomaly_classes_dispatch_only_their_surgical_action() -> None
     assert result["provision_repairs"] == 1
     assert result["revoke_repairs"] == 1
     assert subscriptions.saved == [1]
-    assert payments.outbox[0]["event_name"] == "subscription_ended"
+    assert audit.events[0]["event_name"] == "subscription_ended"
     assert queue.jobs == [
         (JobName.REVOKE_VPN_CONFIGURATION, (10, "expiration")),
         (JobName.REVOKE_VPN_CONFIGURATION, (11, "replacement_cleanup")),
         (JobName.PROVISION_SUBSCRIPTION, (2,)),
         (JobName.PROVISION_SUBSCRIPTION, (3,)),
         (JobName.REVOKE_VPN_CONFIGURATION, (12, "force")),
-        (JobName.PUBLISH_OUTBOX, ()),
     ]
 
 

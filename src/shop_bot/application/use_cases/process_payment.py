@@ -39,7 +39,6 @@ class ProcessPayment:
         now = self.clock()
         provision_subscription_id: int | None = None
         revoke_vpn_configuration_id: int | None = None
-        publish_outbox = True
         async with self.uow_factory() as uow:
             event = await uow.payments.get_event_entity(payment_event_id, for_update=True)
             if event is None:
@@ -59,7 +58,6 @@ class ProcessPayment:
                 if status is PaymentStatus.PAID:
                     paid_result = await self._process_paid(uow, context=resolved, now=now)
                     if isinstance(paid_result, dict):
-                        publish_outbox = False
                         result = paid_result
                     else:
                         provision_subscription_id = paid_result
@@ -76,8 +74,6 @@ class ProcessPayment:
             await self.job_queue.enqueue(JobName.PROVISION_SUBSCRIPTION, provision_subscription_id)
         if revoke_vpn_configuration_id is not None:
             await self.job_queue.enqueue(JobName.REVOKE_VPN_CONFIGURATION, revoke_vpn_configuration_id, "expiration")
-        if publish_outbox:
-            await self.job_queue.enqueue(JobName.PUBLISH_OUTBOX)
         return result
 
     async def _process_refund(
@@ -118,7 +114,7 @@ class ProcessPayment:
         if cumulative >= order.amount.minor:
             period = await uow.subscriptions.get_period_by_payment_order_id(int(order.id), for_update=True)
             if period is None:
-                await uow.payments.create_outbox_event(
+                await uow.audit.append(
                     event_name="refund_entitlement_reconciliation_required",
                     aggregate_type="payment_order",
                     aggregate_id=int(order.id),
@@ -279,7 +275,7 @@ class ProcessPayment:
         uow: UnitOfWork,
         activation: SubscriptionActivation,
     ) -> None:
-        await uow.payments.create_outbox_event(
+        await uow.audit.append(
             event_name="subscription_activated",
             aggregate_type="subscription",
             aggregate_id=activation.subscription.id,
@@ -310,7 +306,7 @@ class ProcessPayment:
             await uow.payments.save_attempt_entity(attempt)
         if order.apply_external_status(status, now):
             await uow.payments.save_order_entity(order)
-        await uow.payments.create_outbox_event(
+        await uow.audit.append(
             event_name=f"payment_{status}",
             aggregate_type="payment_order",
             aggregate_id=int(order.id),

@@ -40,7 +40,7 @@ class State:
             max_attempts=max_attempts,
             next_retry_at=NOW,
         )
-        self.outbox: list[dict[str, Any]] = []
+        self.audit_events: list[dict[str, Any]] = []
         self.in_tx = False
 
 
@@ -71,20 +71,20 @@ class VpnRepo:
         return [self.state.task] if self.state.task.lease_is_expired(now) else []
 
 
-class Payments:
+class Audit:
     def __init__(self, state: State) -> None:
         self.state = state
 
-    async def create_outbox_event(self, **payload: Any) -> int:
-        self.state.outbox.append(payload)
-        return len(self.state.outbox)
+    async def append(self, **payload: Any) -> int:
+        self.state.audit_events.append(payload)
+        return len(self.state.audit_events)
 
 
 class Uow:
     def __init__(self, state: State) -> None:
         self.state = state
         self.vpn = VpnRepo(state)
-        self.payments = Payments(state)
+        self.audit = Audit(state)
 
     async def __aenter__(self) -> "Uow":
         assert not self.state.in_tx
@@ -140,8 +140,8 @@ async def test_panel_revoke_success_finalizes_current_generation_once() -> None:
     assert len(gateway.calls) == 1
     assert state.task.status is PanelRevokeTaskStatus.SUCCEEDED
     assert state.config.status is VpnConfigurationStatus.REVOKED
-    assert [event["event_name"] for event in state.outbox] == ["vpn_configuration_revoked"]
-    assert queue.jobs == [(JobName.PUBLISH_OUTBOX, ())]
+    assert [event["event_name"] for event in state.audit_events] == ["vpn_configuration_revoked"]
+    assert queue.jobs == []
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_stale_panel_revoke_success_does_not_overwrite_newer_generation() 
     assert state.task.status is PanelRevokeTaskStatus.SUCCEEDED
     assert state.config.status is VpnConfigurationStatus.REVOKING
     assert state.config.generation == 3
-    assert state.outbox == []
+    assert state.audit_events == []
 
 
 @pytest.mark.asyncio

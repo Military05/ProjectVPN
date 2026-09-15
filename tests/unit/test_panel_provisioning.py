@@ -62,6 +62,15 @@ class ProvisionState:
         self.block_first = False
         self.get_for_update: list[bool] = []
         self.endpoint_selection_calls = 0
+        self.node_health_status = "online"
+        self.node_is_enabled = True
+        self.node_last_checked_at = NOW
+        self.node_active_clients = 0
+        self.node_max_clients = 500
+        self.node_selection_weight = 100
+        self.node_local_reserved_clients = 0
+        self.locked_local_reserved_clients: int | None = None
+        self.node_lock_calls: list[tuple[int, int]] = []
 
 
 class ProvisionSubscriptions:
@@ -151,6 +160,40 @@ class ProvisionServers:
     async def get_first_enabled_endpoint(self) -> dict[str, Any]:
         self.state.endpoint_selection_calls += 1
         return self.state.endpoint
+
+    def _candidate(self, *, locked: bool) -> dict[str, Any]:
+        local_reserved = self.state.node_local_reserved_clients
+        if locked and self.state.locked_local_reserved_clients is not None:
+            local_reserved = self.state.locked_local_reserved_clients
+        return {
+            **self.state.endpoint,
+            "health_status": self.state.node_health_status,
+            "node_is_enabled": self.state.node_is_enabled,
+            "last_checked_at": self.state.node_last_checked_at,
+            "active_clients": self.state.node_active_clients,
+            "max_clients": self.state.node_max_clients,
+            "selection_weight": self.state.node_selection_weight,
+            "local_reserved_clients": local_reserved,
+        }
+
+    async def list_node_selection_candidates(self) -> list[dict[str, Any]]:
+        if self.state.endpoint["node_id"] is None:
+            return []
+        return [self._candidate(locked=False)]
+
+    async def lock_and_revalidate_candidate(
+        self,
+        node_id: int,
+        endpoint_id: int,
+    ) -> dict[str, Any] | None:
+        self.state.endpoint_selection_calls += 1
+        self.state.node_lock_calls.append((node_id, endpoint_id))
+        if (
+            node_id != self.state.endpoint["node_id"]
+            or endpoint_id != self.state.endpoint["server_endpoint_id"]
+        ):
+            return None
+        return self._candidate(locked=True)
 
 
 class ProvisionAudit:
@@ -282,6 +325,25 @@ async def test_concurrent_provisioning_serializes_subscription_and_creates_one_c
         task = next(iter(state.panel_tasks.values()))
         assert task.payload["client_uuid"] == str(CLIENT_UUID)
         assert all(job[0] == JobName.DISPATCH_PANEL_PROVISION_TASK for job in queue.jobs)
+
+
+@pytest.mark.asyncio
+async def test_node_capacity_is_revalidated_under_lock_without_side_effects() -> None:
+    state = ProvisionState(node_id=5)
+    state.node_max_clients = 1
+    state.node_local_reserved_clients = 0
+    state.locked_local_reserved_clients = 1
+    queue = Queue()
+
+    result = await provision_use_case(state, queue).execute(subscription_id=1)
+
+    assert result == {"status": "waiting_for_node_capacity"}
+    assert state.node_lock_calls == [(5, 7)]
+    assert state.configs == []
+    assert state.node_tasks == {}
+    assert state.panel_tasks == {}
+    assert state.audit_events == []
+    assert queue.jobs == []
 
 
 @pytest.mark.asyncio

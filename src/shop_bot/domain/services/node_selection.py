@@ -18,21 +18,51 @@ class NodeSelectionCandidate:
     active_clients: int | None
     max_clients: int | None
     selection_weight: int
+    local_reserved_clients: int = 0
+
+    @property
+    def effective_clients(self) -> int:
+        return max(
+            max(self.active_clients or 0, 0),
+            max(self.local_reserved_clients, 0),
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class NodeAvailabilityPolicy:
     stale_after_seconds: int = 180
 
+    def allows_operation(
+        self,
+        *,
+        node_status: NodeStatus | str,
+        is_enabled: bool,
+        last_checked_at: datetime | None,
+        now: datetime,
+        require_enabled: bool,
+    ) -> bool:
+        if require_enabled and not is_enabled:
+            return False
+        if last_checked_at is None or last_checked_at < now - timedelta(seconds=self.stale_after_seconds):
+            return False
+        try:
+            status = NodeStatus(node_status)
+        except ValueError:
+            return False
+        return status in {NodeStatus.ONLINE, NodeStatus.DEGRADED}
+
     def eligible(self, candidate: NodeSelectionCandidate, now: datetime) -> bool:
-        if not candidate.is_enabled or candidate.max_clients is None or candidate.max_clients <= 0:
+        if candidate.max_clients is None or candidate.max_clients <= 0:
             return False
-        if candidate.last_checked_at is None or candidate.last_checked_at < now - timedelta(seconds=self.stale_after_seconds):
+        if not self.allows_operation(
+            node_status=candidate.node_status,
+            is_enabled=candidate.is_enabled,
+            last_checked_at=candidate.last_checked_at,
+            now=now,
+            require_enabled=True,
+        ):
             return False
-        status = NodeStatus(candidate.node_status)
-        if status not in {NodeStatus.ONLINE, NodeStatus.DEGRADED}:
-            return False
-        return max(candidate.active_clients or 0, 0) < candidate.max_clients
+        return candidate.effective_clients < candidate.max_clients
 
 
 class WeightedNodeSelector:

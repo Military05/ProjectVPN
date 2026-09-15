@@ -1,0 +1,45 @@
+name: CHANGE-03 PostgreSQL capacity
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - src/shop_bot/application/use_cases/provision_vpn.py
+      - src/shop_bot/infrastructure/persistence/repositories/servers.py
+      - src/shop_bot/domain/services/node_selection.py
+      - tests/integration/test_node_capacity_postgresql.py
+      - .github/workflows/change03-postgresql.yml
+
+jobs:
+  concurrent-final-slot:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: projectvpn_change03_test
+          POSTGRES_USER: shopbot
+          POSTGRES_PASSWORD: integration-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shopbot -d projectvpn_change03_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PROJECTVPN_CHANGE03_TEST_DATABASE_URL: postgresql+asyncpg://shopbot:integration-only-password@127.0.0.1:5432/projectvpn_change03_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install locked development dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Run concurrent final-slot test
+        run: python -m pytest -q tests/integration/test_node_capacity_postgresql.py

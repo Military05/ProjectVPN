@@ -106,6 +106,13 @@ class FakeNodeRepository:
         self.finish_calls = 0
         self.touch_success_calls = 0
         self.unreachable_calls = 0
+        self.operation_state: dict[str, Any] | None = {
+            "node_id": task.node_id,
+            "api_base_url": "http://node",
+            "is_enabled": True,
+            "health_status": "online",
+            "health_last_checked_at": START,
+        }
 
     async def get_task_entity(self, node_task_id: int, *, for_update: bool = False) -> NodeTask | None:
         del for_update
@@ -154,6 +161,11 @@ class FakeNodeRepository:
     async def get_node(self, node_id: int, *, for_update: bool = False) -> dict[str, Any] | None:
         del for_update
         return {"node_id": node_id, "api_base_url": "http://node"}
+
+    async def get_node_operation_state(self, node_id: int) -> dict[str, Any] | None:
+        if self.operation_state is None:
+            return None
+        return {**self.operation_state, "node_id": node_id}
 
     async def get_active_credential(self, node_id: int) -> dict[str, Any]:
         return {"node_id": node_id, "key_id": "key", "shared_secret": "secret"}
@@ -340,3 +352,83 @@ async def test_nonexpired_in_progress_task_is_untouched_by_reaper() -> None:
     assert repo.task.status is NodeTaskStatus.IN_PROGRESS
     assert repo.task.lease_token == token
     assert repo.attempts[1]["status"] == "started"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state_patch", "expected_status"),
+    [
+        ({"is_enabled": False}, "node_unavailable"),
+        ({"health_status": "offline"}, "node_unavailable"),
+        (
+            {"health_last_checked_at": START - timedelta(seconds=181)},
+            "node_unavailable",
+        ),
+    ],
+)
+async def test_unavailable_provision_is_deferred_before_attempt(
+    state_patch: dict[str, Any],
+    expected_status: str,
+) -> None:
+    task = pending_task()
+    clock = MutableClock(START)
+    case, repo, gateway, _ = use_case(task, clock)
+    assert repo.operation_state is not None
+    repo.operation_state.update(state_patch)
+
+    result = await case.execute(node_task_id=10)
+
+    assert result == {"status": expected_status, "node_task_id": 10}
+    assert repo.task.status is NodeTaskStatus.PENDING
+    assert repo.task.attempts == 0
+    assert repo.task.next_retry_at == START + timedelta(seconds=30)
+    assert repo.attempts == {}
+    assert gateway.idempotency_keys == []
+
+
+@pytest.mark.asyncio
+async def test_missing_node_is_deferred_without_consuming_attempt() -> None:
+    task = pending_task()
+    case, repo, gateway, _ = use_case(task, MutableClock(START))
+    repo.operation_state = None
+
+    result = await case.execute(node_task_id=10)
+
+    assert result == {"status": "node_missing", "node_task_id": 10}
+    assert repo.task.status is NodeTaskStatus.PENDING
+    assert repo.task.attempts == 0
+    assert repo.task.next_retry_at == START + timedelta(seconds=30)
+    assert repo.attempts == {}
+    assert gateway.idempotency_keys == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_but_reachable_node_allows_revoke_cleanup() -> None:
+    task = pending_task()
+    task.operation = NodeTaskOperation.REVOKE_CLIENT
+    case, repo, _, _ = use_case(task, MutableClock(START))
+    assert repo.operation_state is not None
+    repo.operation_state["is_enabled"] = False
+
+    prepared = await case._prepare(node_task_id=10, started_at=START)
+
+    assert isinstance(prepared, PreparedDispatch)
+    assert repo.task.status is NodeTaskStatus.IN_PROGRESS
+    assert repo.task.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_offline_node_defers_revoke_cleanup_without_attempt() -> None:
+    task = pending_task()
+    task.operation = NodeTaskOperation.REVOKE_CLIENT
+    case, repo, _, _ = use_case(task, MutableClock(START))
+    assert repo.operation_state is not None
+    repo.operation_state["is_enabled"] = False
+    repo.operation_state["health_status"] = "offline"
+
+    result = await case._prepare(node_task_id=10, started_at=START)
+
+    assert result == {"status": "node_unavailable", "node_task_id": 10}
+    assert repo.task.status is NodeTaskStatus.PENDING
+    assert repo.task.attempts == 0
+    assert repo.attempts == {}

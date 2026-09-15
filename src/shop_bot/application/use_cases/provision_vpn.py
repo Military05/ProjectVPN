@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 from uuid import uuid4
@@ -55,6 +55,7 @@ class ProvisionVpn:
     xui_inbound_id: int
     clock: Callable[[], datetime]
     node_health_stale_after_seconds: int = 180
+    node_selector: WeightedNodeSelector = field(default_factory=WeightedNodeSelector)
 
     async def execute(self, *, subscription_id: int) -> dict[str, str | int]:
         plan = await self._prepare_plan(subscription_id)
@@ -133,7 +134,7 @@ class ProvisionVpn:
 
             endpoint_row = await self._select_endpoint(uow, now)
             if endpoint_row is None:
-                return {"status": "waiting_for_node_capacity", "subscription_id": subscription_id}
+                return {"status": "waiting_for_node_capacity"}
             endpoint = self._endpoint_from_row(endpoint_row)
             configuration = await self._load_or_create_configuration(
                 uow,
@@ -182,29 +183,47 @@ class ProvisionVpn:
             )
 
     async def _select_endpoint(self, uow: UnitOfWork, now: datetime) -> Mapping[str, Any] | None:
-        if hasattr(uow.servers, "list_node_selection_candidates"):
-            rows = await uow.servers.list_node_selection_candidates(now=now, stale_after_seconds=self.node_health_stale_after_seconds)
-            candidates = []
-            for row in rows:
-                if row.get("node_id") is None:
-                    continue
-                candidates.append(NodeSelectionCandidate(
-                    node_id=int(row["node_id"]), endpoint_id=int(row["server_endpoint_id"]),
-                    node_status=str(row.get("health_status") or row.get("status") or "unknown"),
-                    is_enabled=bool(row.get("is_enabled", row.get("node_is_enabled", False))),
-                    last_checked_at=row.get("last_checked_at"), active_clients=row.get("active_clients"),
-                    max_clients=row.get("max_clients"), selection_weight=int(row.get("selection_weight") or 1),
-                ))
-            selected = WeightedNodeSelector().select(candidates, now=now, policy=NodeAvailabilityPolicy(self.node_health_stale_after_seconds))
-            if selected is not None:
-                for row in rows:
-                    if int(row.get("server_endpoint_id")) == selected.endpoint_id:
-                        return row
-            # Preserve panel-only deployments when no node candidates exist.
-            if not candidates:
-                return await uow.servers.get_first_enabled_endpoint()
-            return None
-        return await uow.servers.get_first_enabled_endpoint()
+        rows = await uow.servers.list_node_selection_candidates()
+        candidates = [
+            self._candidate_from_row(row)
+            for row in rows
+            if row.get("node_id") is not None
+        ]
+        policy = NodeAvailabilityPolicy(self.node_health_stale_after_seconds)
+        selected = self.node_selector.select(candidates, now=now, policy=policy)
+        if selected is not None:
+            locked_row = await uow.servers.lock_and_revalidate_candidate(
+                selected.node_id,
+                selected.endpoint_id,
+            )
+            if locked_row is None:
+                return None
+            locked_candidate = self._candidate_from_row(locked_row)
+            if (
+                locked_candidate.node_id != selected.node_id
+                or locked_candidate.endpoint_id != selected.endpoint_id
+                or not policy.eligible(locked_candidate, now)
+            ):
+                return None
+            return locked_row
+        # Preserve panel-only deployments when no node-backed target exists.
+        if not candidates:
+            return await uow.servers.get_first_enabled_endpoint()
+        return None
+
+    @staticmethod
+    def _candidate_from_row(row: Mapping[str, Any]) -> NodeSelectionCandidate:
+        return NodeSelectionCandidate(
+            node_id=int(row["node_id"]),
+            endpoint_id=int(row["server_endpoint_id"]),
+            node_status=str(row.get("health_status") or row.get("status") or "unknown"),
+            is_enabled=bool(row.get("node_is_enabled", row.get("is_enabled", False))),
+            last_checked_at=row.get("last_checked_at"),
+            active_clients=row.get("active_clients"),
+            max_clients=row.get("max_clients"),
+            selection_weight=int(row.get("selection_weight") or 1),
+            local_reserved_clients=int(row.get("local_reserved_clients") or 0),
+        )
 
     async def _reuse_existing_provisioning(
         self,

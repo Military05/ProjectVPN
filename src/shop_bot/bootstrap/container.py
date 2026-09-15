@@ -175,6 +175,8 @@ def _build_application_services(
             retry_base_seconds=settings.node_task_retry_base_seconds,
             lease_seconds=settings.node_task_lease_seconds,
             clock=utcnow,
+            node_health_stale_after_seconds=settings.node_health_stale_after_seconds,
+            node_unavailable_retry_seconds=settings.node_unavailable_retry_seconds,
         ),
         dispatch_panel_provision_task=DispatchPanelProvisionTask(
             uow_factory=uow_factory,

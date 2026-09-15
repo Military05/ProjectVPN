@@ -11,6 +11,7 @@ from shop_bot.application.ports import JobQueue, NodeGateway, UnitOfWorkFactory
 from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.vpn import VpnConfigurationStatus, VpnDesiredState
 from shop_bot.domain.repositories.interfaces import UnitOfWork
+from shop_bot.domain.services.node_selection import NodeAvailabilityPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,8 @@ class DispatchNodeTask:
     retry_base_seconds: int
     lease_seconds: int
     clock: Callable[[], datetime]
+    node_health_stale_after_seconds: int = 180
+    node_unavailable_retry_seconds: int = 30
 
     async def execute(self, *, node_task_id: int) -> dict[str, Any]:
         prepared = await self._prepare(node_task_id=node_task_id, started_at=self.clock())
@@ -120,6 +123,31 @@ class DispatchNodeTask:
                 return early_result
             assert task is not None
 
+            node = await uow.nodes.get_node_operation_state(task.node_id)
+            if node is None:
+                return await self._defer_unavailable_node(
+                    uow,
+                    task=task,
+                    node_task_id=node_task_id,
+                    started_at=started_at,
+                    reason="node_missing",
+                )
+            policy = NodeAvailabilityPolicy(self.node_health_stale_after_seconds)
+            if not policy.allows_operation(
+                node_status=str(node.get("health_status") or "unknown"),
+                is_enabled=bool(node.get("is_enabled", False)),
+                last_checked_at=node.get("health_last_checked_at"),
+                now=started_at,
+                require_enabled=task.operation is NodeTaskOperation.PROVISION_CLIENT,
+            ):
+                return await self._defer_unavailable_node(
+                    uow,
+                    task=task,
+                    node_task_id=node_task_id,
+                    started_at=started_at,
+                    reason="node_unavailable",
+                )
+
             lease_token = uuid4()
             lease_expires_at = started_at + timedelta(seconds=self.lease_seconds)
             attempt_no = task.start_attempt(
@@ -135,17 +163,6 @@ class DispatchNodeTask:
                 started_at=started_at,
             )
             attempt_id = int(attempt["node_task_attempt_id"])
-            node = await uow.nodes.get_node(task.node_id)
-            if node is None:
-                await self._record_preflight_failure(
-                    uow,
-                    task=task,
-                    attempt_id=attempt_id,
-                    error="Node not found",
-                    at=started_at,
-                )
-                return {"status": "node_missing", "node_task_id": node_task_id}
-
             credential = await uow.nodes.get_active_credential(task.node_id)
             if credential is None:
                 await self._record_preflight_failure(
@@ -164,6 +181,23 @@ class DispatchNodeTask:
                 attempt_no=attempt_no,
                 lease_token=lease_token,
             )
+
+    async def _defer_unavailable_node(
+        self,
+        uow: UnitOfWork,
+        *,
+        task: NodeTask,
+        node_task_id: int,
+        started_at: datetime,
+        reason: str,
+    ) -> dict[str, Any]:
+        task.defer_without_attempt(
+            now=started_at,
+            delay_seconds=self.node_unavailable_retry_seconds,
+            error=reason,
+        )
+        await uow.nodes.save_task_entity(task)
+        return {"status": reason, "node_task_id": node_task_id}
 
     @staticmethod
     def _early_result(task: NodeTask | None, node_task_id: int, now: datetime) -> dict[str, Any] | None:

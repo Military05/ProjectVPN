@@ -10,7 +10,12 @@
 - Некорректный XUI `inbound_id` отклоняется до вызова XUI.
 - Добавлены поля health/probe lease/capacity в SQLAlchemy metadata и expand migrations 0007/0008, contract migration 0009.
 - Добавлены immutable `audit_events`, `maintenance_leases`, `AuditRepository` и UoW wiring.
-- Добавлена базовая node selection policy с freshness, health, capacity и weighted random selection.
+- Завершён `CHANGE-03`: `NodeAvailabilityPolicy` является единственным владельцем business-семантики availability; UNKNOWN/OFFLINE/stale/disabled/full node fail closed, а DEGRADED участвует только при отсутствии доступных ONLINE node.
+- Weighted selection использует настоящий вес, deterministic endpoint tie-breaker и не умножает вес node при нескольких endpoints. Repository возвращает только факты, а legacy `get_first_enabled_endpoint()` ограничен panel-only endpoints и больше не решает Node availability.
+- DB-authoritative capacity вычисляется как `max(reported_active_clients, local_reserved_clients)`. Локальный резерв считает все VPN configurations node в состояниях `PROVISIONING`, `ACTIVE`, `FAILED`, `REVOKING`, `REVOKE_FAILED`, включая endpoints того же node.
+- `ProvisionVpn` после weighted выбора блокирует выбранную строку `nodes` через `SELECT ... FOR UPDATE`, затем отдельным statement повторно читает health/freshness/capacity и только после успешной проверки вставляет `PROVISIONING` configuration и NodeTask в той же UoW-транзакции. В production существует один writer создания VPN configuration, и он проходит через этот locking contract.
+- При исчерпанной capacity возвращается точный `{"status":"waiting_for_node_capacity"}` без configuration, task, audit event и enqueue. Два provisioner разных subscriptions не могут одновременно зарезервировать последний slot.
+- `DispatchNodeTask._prepare()` проверяет authoritative health до `start_attempt()`: недоступный node оставляет task в `PENDING`, не увеличивает attempts, не создаёт attempt row, не выполняет HTTP и переносит `next_retry_at` на `NODE_UNAVAILABLE_RETRY_SECONDS`. Для provision требуется enabled+fresh+ONLINE/DEGRADED; revoke допускает disabled node, но по-прежнему требует fresh reachable health.
 - Health sync переведён на bounded worker pool, per-node completion timestamp и probe token fencing; успешные task operations больше не меняют node health.
 - Payment event lookup переведён на `(provider, event_key)` с rolling compatibility fallback; `PaymentAttempt.apply_provider_status()` стал monotonic и возвращает `APPLIED/DUPLICATE/STALE`; ProcessPayment перечитывает attempt после блокировки order.
 - Завершён `CHANGE-04`: физическая Node VPN operation однозначно определяется кортежем `(vpn_configuration_id, operation, vpn_generation)`, а panel revoke — `(vpn_configuration_id, vpn_generation)`; точные unique indexes уже находятся в expand-миграции `0007` и SQLAlchemy metadata.
@@ -50,6 +55,9 @@
 
 ## Проверено
 
+- Целевой набор `CHANGE-03`: `52 passed, 1 skipped`. Проверены fail-closed availability, формула effective capacity, deterministic weighted tickets, ONLINE-before-DEGRADED, endpoint deduplication, двухstatementный `FOR UPDATE` contract, post-lock revalidation без side effects и dispatch preflight для provision/revoke. Единственный skip — новый concurrent final-slot test без локального PostgreSQL.
+- Контрольный полный прогон после `CHANGE-03` с production-valid `NODE_AGENT_INBOUND_ID=1`: `323 passed, 8 skipped`. По сравнению с предыдущим baseline добавлены 23 успешных сценария; новый восьмой skip — только real-PostgreSQL final-slot test.
+- Сырой полный прогон после `CHANGE-03`: `306 passed, 17 failed, 8 skipped`. Перечень 17 унаследованных XUI/production-settings failures не изменился; новых падений нет.
 - `python -m compileall -q src tests alembic` — успешно.
 - Целевой набор `CHANGE-07`: `23 passed, 1 skipped` локально. Проверены bounded/two-phase use case, conditional fencing, client/route HMAC contract, все состояния Node Agent journal, retirement/claim race, отсутствие TTL-механизма и регистрация cron; единственный skip — отдельный real-PostgreSQL тест без локального сервера.
 - Настоящий rolling migration smoke на PostgreSQL `16.14`: GitHub Actions [`34984436733`](https://github.com/Military05/ProjectVPN/actions/runs/34984436733) — `1 passed`. На чистой БД выполнена вся цепочка до `0009`, затем `0009 → 0010`; подтверждены catch-up старых outbox-строк, mirror INSERT от старой replica, сохранение `outbox_events`, оба DESC-индекса, запрет UPDATE/DELETE с SQLSTATE `55000` и повторный `upgrade head` без потери данных.
@@ -74,8 +82,9 @@
 
 ## Осталось для следующего этапа
 
+- Подтвердить новый `tests/integration/test_node_capacity_postgresql.py` на настоящем PostgreSQL 15+: оба concurrent provisioner сначала видят свободный последний slot, после чего ожидаемый итог — один `queued`, один `waiting_for_node_capacity`, ровно одна configuration/task/audit запись. Для этого добавлен отдельный workflow `.github/workflows/change03-postgresql.yml`.
 - Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
-- Завершить `CHANGE-03`: DB-authoritative availability/capacity reservation, weighted selection, повторную проверку выбранного node под `FOR UPDATE` и единый locking contract для каждого production provisioning writer/panel equivalent.
+- Выполнить отдельный финальный audit оставшейся targeted-части `CHANGE-16`, не расширяя его до глобального refactor. Уже сделанные Redis locator removal, compatibility-import guard и stateless order workflow повторять не нужно.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
 - Выполнить оставшиеся integration tests на настоящих PostgreSQL/Redis, не покрытые отдельным migration-0010 workflow.
 - Исправить 17 унаследованных XUI/production-settings падений полного набора перед production acceptance gate.
@@ -84,6 +93,6 @@
 
 ## Что делать в следующем промпте
 
-Следующий отдельный этап разработки — выполнить только `CHANGE-03`: завершить DB-authoritative node availability/capacity reservation и weighted selection во всех production provisioning writers, включая повторную проверку выбранного node под `FOR UPDATE`, результат `waiting_for_node_capacity` без side effects и concurrent final-slot tests. Не повторять завершённые пункты, включая `CHANGE-04`, `CHANGE-05`, `CHANGE-06` и `CHANGE-07`.
+Следующий отдельный этап разработки — выполнить только оставшуюся targeted-часть `CHANGE-16`: провести финальный architecture audit по её точному scope и закрыть только реально незавершённые пункты. Не повторять завершённые `CHANGE-03`, `CHANGE-04`, `CHANGE-05`, `CHANGE-06`, `CHANGE-07` и уже выполненную часть `CHANGE-16`; не делать глобальный refactor `Mapping[str, Any]`, `AdminOperations`, refund aggregate или compatibility DB facade.
 
-После следующей правки снова выполнить целевые конкурентные тесты, `compileall` и полный `pytest`, сравнив результат с текущим raw baseline `283 passed, 17 failed, 7 skipped` и контрольным baseline `300 passed, 7 skipped` при `NODE_AGENT_INBOUND_ID=1`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md`; rolling-upgrade smoke миграции `20260913_0010` уже успешно подтверждён на PostgreSQL 16.14.
+После следующей правки снова выполнить целевые architecture tests, `compileall` и полный `pytest`, сравнив результат с текущим raw baseline `306 passed, 17 failed, 8 skipped` и контрольным baseline `323 passed, 8 skipped` при `NODE_AGENT_INBOUND_ID=1`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md`; rolling-upgrade smoke миграции `20260913_0010` уже успешно подтверждён на PostgreSQL 16.14.

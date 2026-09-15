@@ -149,6 +149,22 @@ class NodeTask:
         self.lease_expires_at = None
         self.lease_token = None
 
+    def defer_without_attempt(
+        self,
+        *,
+        now: datetime,
+        delay_seconds: int,
+        error: str,
+    ) -> None:
+        if self.status is not NodeTaskStatus.PENDING:
+            raise InvalidStateTransition("Only pending node task can be deferred")
+        if delay_seconds <= 0:
+            raise DomainValidationError("Node task defer delay must be positive")
+        self.next_retry_at = now + timedelta(seconds=delay_seconds)
+        self.last_error = error
+        self.updated_at = now
+        self.clear_lease()
+
     def accepts_remote_status(self, remote_status: str) -> bool:
         if self.operation is NodeTaskOperation.PROVISION_CLIENT:
             return remote_status in PROVISION_SUCCESS_STATUSES

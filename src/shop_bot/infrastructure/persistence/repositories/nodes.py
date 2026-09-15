@@ -80,6 +80,19 @@ class NodeRepository:
         result = await self.connection.execute(query)
         return result.mappings().first()
 
+    async def get_node_operation_state(self, node_id: int) -> Mapping[str, Any] | None:
+        result = await self.connection.execute(
+            select(
+                nodes,
+                node_status.c.health_status,
+                node_status.c.last_checked_at.label("health_last_checked_at"),
+            )
+            .outerjoin(node_status, node_status.c.node_id == nodes.c.node_id)
+            .where(nodes.c.node_id == node_id)
+            .limit(1)
+        )
+        return result.mappings().first()
+
     async def get_node_by_key(self, node_key: str) -> Mapping[str, Any] | None:
         result = await self.connection.execute(select(nodes).where(nodes.c.node_key == node_key).limit(1))
         return result.mappings().first()

@@ -219,6 +219,22 @@ class ServerRepository(Protocol):
 
     async def get_first_enabled_endpoint(self) -> Row | None: ...
 
+    async def list_node_selection_candidates(
+        self,
+        *,
+        now: datetime | None = None,
+        stale_after_seconds: int = 180,
+    ) -> list[Row]: ...
+
+    async def lock_and_revalidate_candidate(
+        self,
+        node_id: int,
+        endpoint_id: int | None = None,
+        *,
+        now: datetime | None = None,
+        stale_after_seconds: int = 180,
+    ) -> Row | None: ...
+
 
 class VpnRepository(Protocol):
     async def get_active_configuration_for_user(self, user_id: int, now: datetime) -> Row | None: ...
@@ -286,6 +302,8 @@ class NodeRepository(Protocol):
     async def get_node_entity(self, node_id: int, *, for_update: bool = False) -> Node | None: ...
 
     async def get_node(self, node_id: int, *, for_update: bool = False) -> Row | None: ...
+
+    async def get_node_operation_state(self, node_id: int) -> Row | None: ...
 
     async def get_node_by_key(self, node_key: str) -> Row | None: ...
 

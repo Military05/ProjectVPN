@@ -55,7 +55,7 @@ def _sqlstate(error: DBAPIError) -> str | None:
 @pytest.mark.asyncio
 async def test_real_postgresql_0010_rolling_upgrade_contract() -> None:
     assert DATABASE_URL is not None
-    database_url = str(_asyncpg_url(DATABASE_URL))
+    database_url = _asyncpg_url(DATABASE_URL).render_as_string(hide_password=False)
     engine = create_async_engine(database_url, isolation_level="AUTOCOMMIT")
 
     try:

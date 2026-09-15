@@ -129,14 +129,7 @@ subscription_periods = Table(
     Column("starts_at", DateTime(timezone=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("is_paid", Boolean, nullable=False, server_default=text("false")),
-    Column(
-        "payment_order_id",
-        BigInteger,
-        ForeignKey("payment_orders.payment_order_id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    ),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()),
-    UniqueConstraint("payment_order_id", name="uq_subscription_periods_payment_order_id"),
     CheckConstraint("starts_at < expires_at", name="subscription_periods_time_range"),
     CheckConstraint("created_at <= expires_at", name="subscription_periods_created_at_consistency"),
 )

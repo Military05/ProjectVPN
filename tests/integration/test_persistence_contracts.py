@@ -47,6 +47,15 @@ def test_existing_alembic_revisions_are_preserved() -> None:
     assert "20260425_0002_multinode_architecture.py" in revision_files
 
 
+def test_initial_schema_snapshot_precedes_payment_provenance_migration() -> None:
+    from shop_bot.infrastructure.persistence.sqlalchemy.metadata_v1 import (
+        metadata as initial_metadata,
+    )
+
+    assert "payment_order_id" not in initial_metadata.tables["subscription_periods"].c
+    assert "payment_order_id" in metadata.tables["subscription_periods"].c
+
+
 def test_p0_additive_columns_and_migration_contract() -> None:
     payment_events = metadata.tables["payment_events"]
     assert {

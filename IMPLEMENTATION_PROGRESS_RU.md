@@ -56,6 +56,7 @@
 ## Проверено
 
 - Целевой набор `CHANGE-03`: `52 passed, 1 skipped`. Проверены fail-closed availability, формула effective capacity, deterministic weighted tickets, ONLINE-before-DEGRADED, endpoint deduplication, двухstatementный `FOR UPDATE` contract, post-lock revalidation без side effects и dispatch preflight для provision/revoke. Единственный skip — новый concurrent final-slot test без локального PostgreSQL.
+- Настоящий concurrent final-slot test на PostgreSQL 16: GitHub Actions [`35031255654`](https://github.com/Military05/ProjectVPN/actions/runs/35031255654) — `1 passed`. Оба provisioner получили один и тот же pre-lock snapshot свободного последнего slot; после сериализации по node-row lock итогом стали один `queued`, один `waiting_for_node_capacity` и ровно по одной configuration, NodeTask и audit-записи.
 - Контрольный полный прогон после `CHANGE-03` с production-valid `NODE_AGENT_INBOUND_ID=1`: `323 passed, 8 skipped`. По сравнению с предыдущим baseline добавлены 23 успешных сценария; новый восьмой skip — только real-PostgreSQL final-slot test.
 - Сырой полный прогон после `CHANGE-03`: `306 passed, 17 failed, 8 skipped`. Перечень 17 унаследованных XUI/production-settings failures не изменился; новых падений нет.
 - `python -m compileall -q src tests alembic` — успешно.
@@ -82,7 +83,6 @@
 
 ## Осталось для следующего этапа
 
-- Подтвердить новый `tests/integration/test_node_capacity_postgresql.py` на настоящем PostgreSQL 15+: оба concurrent provisioner сначала видят свободный последний slot, после чего ожидаемый итог — один `queued`, один `waiting_for_node_capacity`, ровно одна configuration/task/audit запись. Для этого добавлен отдельный workflow `.github/workflows/change03-postgresql.yml`.
 - Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
 - Выполнить отдельный финальный audit оставшейся targeted-части `CHANGE-16`, не расширяя его до глобального refactor. Уже сделанные Redis locator removal, compatibility-import guard и stateless order workflow повторять не нужно.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.

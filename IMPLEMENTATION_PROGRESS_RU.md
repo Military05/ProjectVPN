@@ -38,7 +38,11 @@
 - Dockerfile устанавливает только `build.lock` и `runtime.lock` с `--require-hashes`, затем проект с `--no-deps --no-build-isolation` и выполняет `pip check`; обновление pip и разрешение project dependency ranges во время image build удалены, digest Python 3.12 base image сохранён.
 - Добавлен пользовательский чек-лист `CHANGE12_CHECKLIST_RU.md` с изолированным PostgreSQL 16 стендом, командами тестов и ручной проверкой административной панели.
 - Redis оставлен disposable; Prometheus ограничен bind `127.0.0.1:9090`; добавлен отдельный Compose migrate job и schema assertion для worker/readiness.
-- Добавлен authenticated Node Agent journal retirement endpoint.
+- Завершён `CHANGE-07`: `RetireNodeJournalRecords` выбирает не более 100 terminal NodeTasks без `journal_retired_at`, закрывает первую UoW до сетевого запроса и после подтверждения Node Agent открывает отдельную транзакцию для fenced-отметки по неизменившимся `node_task_id`, terminal status и `idempotency_key`.
+- Worker запускает bounded retirement job каждую минуту. Ответы `retired` и `already_retired` безопасно сходятся к одной центральной отметке; `operation_in_progress`, отсутствующее подключение к node, сетевые ошибки и неожиданные ответы не помечают запись удалённой и остаются для следующего прохода.
+- HMAC-authenticated `POST /agent/idempotency/retire` удаляет только `completed/retryable`, для отсутствующей записи возвращает `already_retired`, а для `in_progress` всегда отвечает `409 operation_in_progress`, включая истёкший lease. Подписанный idempotency key обязан совпадать с body.
+- Time-based retirement полностью удалён из active design: больше нет `NODE_AGENT_IDEMPOTENCY_RETENTION_DAYS`, `_journal_maintenance()` и `prune_completed()`. SQLite retirement сериализован с claim/reclaim через `BEGIN IMMEDIATE`; legacy pruning index удаляется при инициализации.
+- Для реального migration acceptance добавлен отдельный GitHub Actions стенд PostgreSQL 16. Исторический `metadata_v1` исправлен так, чтобы `payment_order_id` впервые добавлялся миграцией `0006`, а не присутствовал уже в snapshot `0001`.
 - После schema assertion worker выполняет один bounded startup recovery pass (до 100 записей каждого типа): received payment events, stale/due node tasks, panel provision tasks и panel revoke tasks.
 - Удалён глобальный Redis service locator (`get_redis`/`set_redis`): Redis теперь принадлежит DI container; добавлены architecture guards против возврата locator и новых production imports через compatibility `infrastructure/db`.
 - Завершён `CHANGE-10`: создание и повтор заказа вынесены в stateless `OrderFlow`; удалены process-local `_order_intents` и `OrderIntentContext`; после перезапуска бота callback повторно получает актуальный enabled-тариф из backend и использует прежний idempotency key `tg-ui2:{telegram_id}:{tariff_id}:{intent_id}`.
@@ -47,6 +51,8 @@
 ## Проверено
 
 - `python -m compileall -q src tests alembic` — успешно.
+- Целевой набор `CHANGE-07`: `23 passed, 1 skipped` локально. Проверены bounded/two-phase use case, conditional fencing, client/route HMAC contract, все состояния Node Agent journal, retirement/claim race, отсутствие TTL-механизма и регистрация cron; единственный skip — отдельный real-PostgreSQL тест без локального сервера.
+- Настоящий rolling migration smoke на PostgreSQL `16.14`: GitHub Actions [`34984436733`](https://github.com/Military05/ProjectVPN/actions/runs/34984436733) — `1 passed`. На чистой БД выполнена вся цепочка до `0009`, затем `0009 → 0010`; подтверждены catch-up старых outbox-строк, mirror INSERT от старой replica, сохранение `outbox_events`, оба DESC-индекса, запрет UPDATE/DELETE с SQLSTATE `55000` и повторный `upgrade head` без потери данных.
 - Целевой набор `CHANGE-06`: `115 passed` — append-only repository, transactional rollback audit-факта, audit wiring всех затронутых use cases, отсутствие активной outbox state machine, rolling mirror/catch-up/immutability migration contract и database-free Redis tombstone.
 - Целевой набор `CHANGE-05`: `51 passed` — maintenance lease/owner fencing, точный concurrent result, bounded keyset batches, шесть anomaly actions, enqueue failure, lease loss, отсутствие full-scan cron, compatibility wrapper, repository SQL contract и локальное завершение `SUCCEEDED` Node/panel task без replay.
 - Целевой набор `CHANGE-04`: `70 passed` — domain transitions, Node/panel task states, terminal local recovery, cleanup-before-replacement, original endpoint/client preservation, physical-index/repository conflict contracts, same-key central retry и Node Agent ambiguous-operation recovery.
@@ -60,24 +66,24 @@
 - Полный `pytest -q` после `CHANGE-04`: `222 passed, 30 failed, 6 skipped`. От baseline `198 passed, 34 failed, 6 skipped` добавлено 20 новых успешных CHANGE-04 сценариев и восстановлены четыре относящиеся к operation identity проверки; новых падений нет, оставшиеся 30 унаследованы.
 - Полный `pytest -q` после `CHANGE-05`: `251 passed, 30 failed, 6 skipped`. Добавлено 29 успешных CHANGE-05 сценариев; перечень 30 унаследованных падений не изменился, новых падений нет.
 - Полный `pytest -q` после `CHANGE-06`: `268 passed, 19 failed, 6 skipped`. Добавлено 6 новых проверок и восстановлено 11 старых тестов, чьи fake repositories/metadata expectations всё ещё описывали прежний outbox; новых падений нет. Оставшиеся 19 унаследованных падений относятся к route snapshots и XUI/production-settings contract, а не к `CHANGE-06`.
-- `pip check`, `git diff --check`, `alembic heads` (`20260913_0010`) и `compileall` после `CHANGE-06` — успешно.
+- Полный `pytest -q` после `CHANGE-07`: `283 passed, 17 failed, 7 skipped`. Новых падений нет; два старых route-snapshot падения устранены актуализацией Node Agent contract. Оставшиеся 17 относятся к прежним XUI/production-settings тестовым fixtures, которые включают XUI с дефолтным строковым inbound `main-vless`, а не к journal retirement.
+- Контрольный полный прогон с production-valid `NODE_AGENT_INBOUND_ID=1`: `300 passed, 7 skipped`. Семь skips — шесть PostgreSQL-сценариев `CHANGE-12` и локальный дубль real-PostgreSQL проверки `0010`; последняя отдельно успешно выполнена в GitHub Actions.
+- `pip check`, `git diff --check`, `alembic heads` (`20260913_0010`), `compileall`, YAML parse workflow и `node --check` после `CHANGE-07` — успешно.
 - В текущей среде нет Docker CLI, поэтому реальный `docker compose build --no-cache` здесь не запускался; Dockerfile contract проверен автоматическим тестом, но clean image acceptance нужно выполнить на ноутбуке.
 - `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
 
 ## Осталось для следующего этапа
 
 - Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
-- Завершить `CHANGE-07`: central journal retirement use case поверх уже существующих schema fields, partial index и authenticated Node Agent endpoint.
-- Завершить locking/capacity reservation в каждом production writer и panel equivalent.
+- Завершить `CHANGE-03`: DB-authoritative availability/capacity reservation, weighted selection, повторную проверку выбранного node под `FOR UPDATE` и единый locking contract для каждого production provisioning writer/panel equivalent.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
-- Выполнить integration tests на PostgreSQL/Redis и проверить upgrade path 0006→0007→0008→0009.
-- Проверить на настоящем PostgreSQL rolling upgrade до `20260913_0010`: backfill старых строк, mirror INSERT старой replica, запрет UPDATE/DELETE audit rows и сохранение `outbox_events` до будущей contract-миграции.
-- Исправить 19 унаследованных падений полного набора тестов перед production acceptance gate.
+- Выполнить оставшиеся integration tests на настоящих PostgreSQL/Redis, не покрытые отдельным migration-0010 workflow.
+- Исправить 17 унаследованных XUI/production-settings падений полного набора перед production acceptance gate.
 
 Текущая ветка `main` является промежуточным checkpoint для продолжения работы, а не заявлением о полном прохождении production acceptance gate.
 
 ## Что делать в следующем промпте
 
-Следующий отдельный этап разработки — выполнить только `CHANGE-07`: завершить central journal retirement use case поверх уже существующих schema fields, partial index и authenticated Node Agent endpoint. Не повторять завершённые пункты, включая `CHANGE-04`, `CHANGE-05` и `CHANGE-06`.
+Следующий отдельный этап разработки — выполнить только `CHANGE-03`: завершить DB-authoritative node availability/capacity reservation и weighted selection во всех production provisioning writers, включая повторную проверку выбранного node под `FOR UPDATE`, результат `waiting_for_node_capacity` без side effects и concurrent final-slot tests. Не повторять завершённые пункты, включая `CHANGE-04`, `CHANGE-05`, `CHANGE-06` и `CHANGE-07`.
 
-После следующей правки снова выполнить целевые тесты, `compileall` и полный `pytest`, сравнив результат с текущим baseline `268 passed, 19 failed, 6 skipped`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache`, шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md` и реальный rolling-upgrade smoke миграции `20260913_0010`.
+После следующей правки снова выполнить целевые конкурентные тесты, `compileall` и полный `pytest`, сравнив результат с текущим raw baseline `283 passed, 17 failed, 7 skipped` и контрольным baseline `300 passed, 7 skipped` при `NODE_AGENT_INBOUND_ID=1`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md`; rolling-upgrade smoke миграции `20260913_0010` уже успешно подтверждён на PostgreSQL 16.14.

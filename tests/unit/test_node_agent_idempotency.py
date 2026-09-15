@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import sqlite3
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,7 +12,11 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from shop_bot.apps.node_agent.routes import _execute_operation
+from shop_bot.apps.node_agent.routes import (
+    JournalRetireRequest,
+    _execute_operation,
+    retire_journal,
+)
 from shop_bot.infrastructure.nodes.auth import VerifiedNodeRequest
 from shop_bot.infrastructure.nodes.idempotency import JournalClaimKind, NodeOperationJournal
 
@@ -274,17 +279,182 @@ async def test_header_body_idempotency_mismatch_is_rejected_before_runtime(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_completed_journal_retention_prunes_only_old_completed_rows(tmp_path) -> None:
+async def test_completed_journal_is_retired_only_by_explicit_handshake(tmp_path) -> None:
     journal = NodeOperationJournal(str(tmp_path / "journal.sqlite3"), lease_seconds=30)
     await journal.initialize()
-    old = await journal.claim(idempotency_key="old", request_hash="h1", operation="revoke", client_uuid="c1", inbound_id="1", now=NOW)
-    active = await journal.claim(idempotency_key="active", request_hash="h2", operation="revoke", client_uuid="c2", inbound_id="1", now=NOW)
-    assert old.owner_token and active.owner_token
-    assert await journal.complete(idempotency_key="old", owner_token=old.owner_token, response={"status":"revoked"}, now=NOW)
-    removed = await journal.prune_completed(before=NOW + timedelta(days=1))
-    assert removed == 1
-    old_again = await journal.claim(idempotency_key="old", request_hash="h1", operation="revoke", client_uuid="c1", inbound_id="1", now=NOW + timedelta(days=1))
-    active_again = await journal.claim(idempotency_key="active", request_hash="h2", operation="revoke", client_uuid="c2", inbound_id="1", now=NOW + timedelta(days=1))
-    assert old_again.kind is JournalClaimKind.OWNER
-    assert active_again.kind is JournalClaimKind.OWNER  # stale in-progress lease is reclaimable, not retention-deleted
-    assert active_again.reclaimed is True
+    claim = await journal.claim(
+        idempotency_key="completed",
+        request_hash="hash",
+        operation="revoke",
+        client_uuid="client",
+        inbound_id="1",
+        now=NOW,
+    )
+    assert claim.owner_token
+    assert await journal.complete(
+        idempotency_key="completed",
+        owner_token=claim.owner_token,
+        response={"status": "revoked"},
+        now=NOW,
+    )
+
+    assert await journal.retire("completed") == "retired"
+    assert await journal.retire("completed") == "already_retired"
+
+
+@pytest.mark.asyncio
+async def test_retryable_journal_can_be_retired_but_in_progress_never_is(tmp_path) -> None:
+    journal = NodeOperationJournal(str(tmp_path / "journal.sqlite3"), lease_seconds=30)
+    await journal.initialize()
+    retryable = await journal.claim(
+        idempotency_key="retryable",
+        request_hash="h1",
+        operation="revoke",
+        client_uuid="c1",
+        inbound_id="1",
+        now=NOW,
+    )
+    active = await journal.claim(
+        idempotency_key="active",
+        request_hash="h2",
+        operation="revoke",
+        client_uuid="c2",
+        inbound_id="1",
+        now=NOW,
+    )
+    assert retryable.owner_token and active.owner_token
+    assert await journal.mark_retryable(
+        idempotency_key="retryable",
+        owner_token=retryable.owner_token,
+        error="connection lost",
+        now=NOW,
+    )
+
+    assert await journal.retire("retryable") == "retired"
+    assert await journal.retire("active") == "operation_in_progress"
+
+    # Even an expired in-progress lease must first go through ambiguity
+    # recovery; retirement is not allowed to infer completion from time.
+    reclaimed = await journal.claim(
+        idempotency_key="active",
+        request_hash="h2",
+        operation="revoke",
+        client_uuid="c2",
+        inbound_id="1",
+        now=NOW + timedelta(seconds=31),
+    )
+    assert reclaimed.kind is JournalClaimKind.OWNER
+    assert reclaimed.reclaimed is True
+    assert reclaimed.owner_token
+    assert await journal.complete(
+        idempotency_key="active",
+        owner_token=reclaimed.owner_token,
+        response={"status": "revoked"},
+        now=NOW + timedelta(seconds=31),
+    )
+    assert await journal.retire("active") == "retired"
+
+
+@pytest.mark.asyncio
+async def test_retirement_route_fences_signed_key_and_maps_in_progress_to_409(tmp_path) -> None:
+    journal = NodeOperationJournal(str(tmp_path / "journal.sqlite3"), lease_seconds=30)
+    await journal.initialize()
+    runtime = RuntimeSpy()
+    request = make_request(
+        body=orjson.dumps({"idempotency_key": "body-key"}),
+        path="/agent/idempotency/retire",
+        journal=journal,
+        runtime=runtime,
+    )
+    with pytest.raises(HTTPException) as mismatch:
+        await retire_journal(
+            JournalRetireRequest(idempotency_key="body-key"),
+            request,
+            verified("signed-key"),
+        )
+    assert mismatch.value.status_code == 400
+
+    active = await journal.claim(
+        idempotency_key="active-key",
+        request_hash="hash",
+        operation="revoke",
+        client_uuid="client",
+        inbound_id="1",
+        now=NOW,
+    )
+    assert active.owner_token
+    active_request = make_request(
+        body=orjson.dumps({"idempotency_key": "active-key"}),
+        path="/agent/idempotency/retire",
+        journal=journal,
+        runtime=runtime,
+    )
+    with pytest.raises(HTTPException) as in_progress:
+        await retire_journal(
+            JournalRetireRequest(idempotency_key="active-key"),
+            active_request,
+            verified("active-key"),
+        )
+    assert in_progress.value.status_code == 409
+    assert in_progress.value.detail == "operation_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_retryable_claim_race_can_never_delete_the_new_in_progress_owner(tmp_path) -> None:
+    journal = NodeOperationJournal(str(tmp_path / "journal.sqlite3"), lease_seconds=30)
+    await journal.initialize()
+
+    for index in range(20):
+        key = f"race-{index}"
+        initial = await journal.claim(
+            idempotency_key=key,
+            request_hash="hash",
+            operation="provision",
+            client_uuid="client",
+            inbound_id="1",
+            now=NOW,
+        )
+        assert initial.owner_token
+        assert await journal.mark_retryable(
+            idempotency_key=key,
+            owner_token=initial.owner_token,
+            error="retry",
+            now=NOW,
+        )
+
+        retired, reclaimed = await asyncio.gather(
+            journal.retire(key),
+            journal.claim(
+                idempotency_key=key,
+                request_hash="hash",
+                operation="provision",
+                client_uuid="client",
+                inbound_id="1",
+                now=NOW + timedelta(seconds=1),
+            ),
+        )
+
+        assert retired in {"retired", "operation_in_progress"}
+        assert reclaimed.kind is JournalClaimKind.OWNER
+        assert await journal.retire(key) == "operation_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_initialize_removes_legacy_time_pruning_index(tmp_path) -> None:
+    path = tmp_path / "journal.sqlite3"
+    journal = NodeOperationJournal(str(path), lease_seconds=30)
+    await journal.initialize()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE INDEX idx_node_operation_journal_status_updated "
+            "ON node_operation_journal(status, updated_at)"
+        )
+
+    await journal.initialize()
+
+    with sqlite3.connect(path) as connection:
+        index = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+            ("idx_node_operation_journal_status_updated",),
+        ).fetchone()
+    assert index is None

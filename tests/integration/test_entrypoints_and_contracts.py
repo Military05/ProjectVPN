@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 API_CONTRACT = {
     ("GET", "/health/live"),
     ("GET", "/health/ready"),
+    ("GET", "/metrics"),
     ("GET", "/bot/tariffs"),
     ("GET", "/bot/dashboard"),
     ("POST", "/bot/register"),
@@ -47,6 +48,9 @@ NODE_AGENT_CONTRACT = {
     ("GET", "/agent/health"),
     ("GET", "/agent/capabilities"),
     ("GET", "/agent/status"),
+    ("GET", "/agent/snapshot"),
+    ("GET", "/metrics"),
+    ("POST", "/agent/idempotency/retire"),
     ("POST", "/agent/clients/provision"),
     ("POST", "/agent/clients/revoke"),
 }

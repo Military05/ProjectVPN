@@ -9,6 +9,7 @@ from shop_bot.application.use_cases.node_administration import NodeAdministratio
 from shop_bot.application.use_cases.process_payment import ProcessPayment
 from shop_bot.application.use_cases.provision_vpn import ProvisionVpn
 from shop_bot.application.use_cases.register_user import RegisterBotUser
+from shop_bot.application.use_cases.retire_node_journal_records import RetireNodeJournalRecords
 from shop_bot.application.use_cases.revoke_vpn import RevokeVpn
 from shop_bot.application.use_cases.sync_nodes import SyncNodeStatus
 from shop_bot.application.use_cases.sync_subscriptions import ReconcileSubscriptions
@@ -26,6 +27,7 @@ __all__ = [
     "ProvisionVpn",
     "RegisterBotUser",
     "ReconcileSubscriptions",
+    "RetireNodeJournalRecords",
     "RevokeVpn",
     "SyncNodeStatus",
 ]

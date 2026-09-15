@@ -339,6 +339,16 @@ class NodeRepository(Protocol):
 
     async def list_stale_task_entities(self, now: datetime, limit: int = 100) -> list[NodeTask]: ...
 
+    async def list_terminal_unretired_tasks(self, limit: int = 100) -> list[NodeTask]: ...
+
+    async def mark_task_journal_retired(
+        self,
+        *,
+        node_task_id: int,
+        idempotency_key: str,
+        retired_at: datetime,
+    ) -> bool: ...
+
     async def create_task_attempt(
         self,
         *,

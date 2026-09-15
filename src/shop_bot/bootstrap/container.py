@@ -20,6 +20,7 @@ from shop_bot.application.use_cases import (
     ProvisionVpn,
     ReconcileSubscriptions,
     RegisterBotUser,
+    RetireNodeJournalRecords,
     RevokeVpn,
     SyncNodeStatus,
 )
@@ -46,6 +47,7 @@ class ApplicationServices:
     dispatch_panel_provision_task: DispatchPanelProvisionTask
     dispatch_panel_revoke_task: DispatchPanelRevokeTask
     reconcile_subscriptions: ReconcileSubscriptions
+    retire_node_journal_records: RetireNodeJournalRecords
     sync_node_status: SyncNodeStatus
 
 
@@ -191,6 +193,11 @@ def _build_application_services(
             clock=utcnow,
         ),
         reconcile_subscriptions=reconcile_subscriptions,
+        retire_node_journal_records=RetireNodeJournalRecords(
+            uow_factory=uow_factory,
+            node_gateway=node_gateway,
+            clock=utcnow,
+        ),
         sync_node_status=sync_node_status,
     )
     queries = ApplicationQueries(

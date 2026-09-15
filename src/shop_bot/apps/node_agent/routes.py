@@ -4,7 +4,7 @@ from hashlib import sha256
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shop_bot.domain.entities.node import PROVISION_SUCCESS_STATUSES, REVOKE_SUCCESS_STATUSES
 from shop_bot.infrastructure.nodes.auth import (
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/agent", tags=["node-agent"])
 
 
 class JournalRetireRequest(BaseModel):
-    idempotency_key: str
+    idempotency_key: str = Field(min_length=1)
 
 
 async def require_node_auth(request: Request) -> VerifiedNodeRequest:
@@ -79,8 +79,17 @@ async def snapshot(request: Request) -> AgentSnapshotResponse:
     )
 
 
-@router.post("/idempotency/retire", dependencies=[Depends(require_node_auth)])
-async def retire_journal(payload: JournalRetireRequest, request: Request) -> dict[str, str]:
+@router.post("/idempotency/retire")
+async def retire_journal(
+    payload: JournalRetireRequest,
+    request: Request,
+    verified: VerifiedNodeRequest = Depends(require_node_auth),
+) -> dict[str, str]:
+    if payload.idempotency_key != verified.idempotency_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Signed idempotency key does not match request body",
+        )
     result = await request.app.state.operation_journal.retire(payload.idempotency_key)
     if result == "operation_in_progress":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result)

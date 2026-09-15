@@ -101,6 +101,33 @@ class NodeApiClient:
             idempotency_key=idempotency_key,
         )
 
+    async def retire_journal_record(
+        self,
+        *,
+        node: Mapping[str, Any],
+        credential: Mapping[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        try:
+            return await self._request(
+                node=node,
+                credential=credential,
+                method="POST",
+                path="/agent/idempotency/retire",
+                payload={"idempotency_key": idempotency_key},
+                idempotency_key=idempotency_key,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 409:
+                raise
+            try:
+                detail = exc.response.json().get("detail")
+            except (AttributeError, ValueError):
+                raise exc
+            if detail != "operation_in_progress":
+                raise
+            return {"status": "operation_in_progress"}
+
     async def _request(
         self,
         *,

@@ -39,9 +39,6 @@ class NodeOperationJournal:
     async def close(self) -> None:
         return None
 
-    async def prune_completed(self, before: datetime) -> int:
-        return await asyncio.to_thread(self._prune_completed_sync, before)
-
     async def retire(self, idempotency_key: str) -> str:
         return await asyncio.to_thread(self._retire_sync, idempotency_key)
 
@@ -138,8 +135,7 @@ class NodeOperationJournal:
                 "ON node_operation_journal(status, lease_expires_at)"
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_node_operation_journal_status_updated "
-                "ON node_operation_journal(status, updated_at)"
+                "DROP INDEX IF EXISTS idx_node_operation_journal_status_updated"
             )
 
     def _claim_sync(
@@ -270,23 +266,42 @@ class NodeOperationJournal:
             )
             return result.rowcount == 1
 
-    def _prune_completed_sync(self, before: datetime) -> int:
-        with self._connect() as connection:
-            result = connection.execute(
-                "DELETE FROM node_operation_journal WHERE status = 'completed' AND updated_at < ?",
-                (_timestamp(before),),
-            )
-            return int(result.rowcount)
-
     def _retire_sync(self, idempotency_key: str) -> str:
-        with self._connect() as connection:
-            row = connection.execute("SELECT status FROM node_operation_journal WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+        connection = self._connect()
+        try:
+            # Serialize retirement with claim/reclaim. A SELECT followed by an
+            # autocommit DELETE could otherwise erase a row that became
+            # in_progress between the two statements.
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM node_operation_journal WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
             if row is None:
+                connection.execute("COMMIT")
                 return "already_retired"
             if row["status"] == "in_progress":
+                connection.execute("COMMIT")
                 return "operation_in_progress"
-            connection.execute("DELETE FROM node_operation_journal WHERE idempotency_key = ?", (idempotency_key,))
+            result = connection.execute(
+                """
+                DELETE FROM node_operation_journal
+                WHERE idempotency_key = ? AND status IN ('completed', 'retryable')
+                """,
+                (idempotency_key,),
+            )
+            connection.execute("COMMIT")
+            if result.rowcount != 1:
+                raise RuntimeError("Journal retirement lost its serialized row")
             return "retired"
+        except BaseException:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            connection.close()
 
 
 def _timestamp(value: datetime) -> str:

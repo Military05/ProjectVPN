@@ -33,6 +33,14 @@ class PanelGateway(Protocol):
 
 
 class NodeGateway(Protocol):
+    async def retire_journal_record(
+        self,
+        *,
+        node: Mapping[str, Any],
+        credential: Mapping[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
+
     async def provision_client(
         self,
         *,

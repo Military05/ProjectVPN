@@ -101,7 +101,6 @@ class Settings(BaseSettings):
     node_agent_encryption: str | None = "none"
     node_agent_idempotency_db_path: str = "/var/lib/shopbot-node-agent/idempotency.sqlite3"
     node_agent_operation_lease_seconds: int = 60
-    node_agent_idempotency_retention_days: int = 30
 
     demo_node_auto_register: bool = False
     demo_node_key: str = "demo-node"

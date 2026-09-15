@@ -388,6 +388,38 @@ class NodeRepository:
         result = await self.connection.execute(query)
         return [node_task_from_row(row) for row in result.mappings().all()]
 
+    async def list_terminal_unretired_tasks(self, limit: int = 100) -> list[NodeTask]:
+        result = await self.connection.execute(
+            select(node_tasks)
+            .where(
+                node_tasks.c.status.in_(("succeeded", "failed", "cancelled")),
+                node_tasks.c.journal_retired_at.is_(None),
+            )
+            .order_by(node_tasks.c.node_task_id.asc())
+            .limit(limit)
+        )
+        return [node_task_from_row(row) for row in result.mappings().all()]
+
+    async def mark_task_journal_retired(
+        self,
+        *,
+        node_task_id: int,
+        idempotency_key: str,
+        retired_at: datetime,
+    ) -> bool:
+        result = await self.connection.execute(
+            update(node_tasks)
+            .where(
+                node_tasks.c.node_task_id == node_task_id,
+                node_tasks.c.idempotency_key == idempotency_key,
+                node_tasks.c.status.in_(("succeeded", "failed", "cancelled")),
+                node_tasks.c.journal_retired_at.is_(None),
+            )
+            .values(journal_retired_at=retired_at, updated_at=retired_at)
+            .returning(node_tasks.c.node_task_id)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def mark_task_in_progress(self, node_task_id: int, *, started_at: datetime) -> Mapping[str, Any] | None:
         result = await self.connection.execute(
             update(node_tasks)

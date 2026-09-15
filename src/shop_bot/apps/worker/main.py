@@ -21,6 +21,7 @@ from shop_bot.application.commands.dispatch_panel_revoke_task import (
 from shop_bot.application.commands.process_payment_event import process_payment_event
 from shop_bot.application.commands.recover_stale_node_tasks import recover_stale_node_tasks
 from shop_bot.application.commands.recover_payment_events import recover_payment_events
+from shop_bot.application.commands.retire_node_journal_records import retire_node_journal_records
 from shop_bot.application.commands.provision_vpn_configuration import provision_vpn_configuration
 from shop_bot.application.commands.publish_outbox_events import publish_outbox_events
 from shop_bot.application.commands.reconcile_subscriptions import reconcile_subscriptions
@@ -155,6 +156,10 @@ async def recover_payment_events_job(ctx: dict) -> dict:
     return dict(await recover_payment_events(ctx["container"]))
 
 
+async def retire_node_journal_records_job(ctx: dict) -> dict:
+    return dict(await retire_node_journal_records(ctx["container"]))
+
+
 def reconciliation_cron_kwargs(interval_seconds: int) -> dict[str, int | set[int]]:
     """Translate the validated reconciliation interval to an exact ARQ cron cadence."""
 
@@ -194,6 +199,7 @@ class WorkerSettings:
         sync_expired_subscriptions_job,
         func(publish_outbox_job, name=LEGACY_PUBLISH_OUTBOX_JOB_NAME),
         recover_payment_events_job,
+        retire_node_journal_records_job,
     ]
     on_startup = startup
     on_shutdown = shutdown
@@ -202,6 +208,7 @@ class WorkerSettings:
     max_jobs = 10
     cron_jobs = [
         cron(recover_payment_events_job, minute=set(range(60))),
+        cron(retire_node_journal_records_job, minute=set(range(60))),
         cron(
             reconcile_subscriptions_job,
             **reconciliation_cron_kwargs(settings.background_sync_interval_seconds),

@@ -104,6 +104,7 @@ def test_xui_runtime_rejects_http_200_logical_failure(monkeypatch) -> None:
     monkeypatch.setattr(runtime_module.httpx, "AsyncClient", Client)
     settings = Settings(
         node_agent_runtime_mode="xui",
+        node_agent_inbound_id="1",
         xui_base_url="http://xui.local",
         xui_username="user",
         xui_password="secret",

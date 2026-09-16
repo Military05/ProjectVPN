@@ -24,6 +24,7 @@ def safe_production_settings(**overrides: object) -> Settings:
         "node_agent_shared_secret": "prod-node-secret",
         "demo_node_shared_secret": "prod-demo-secret",
         "node_agent_runtime_mode": "xui",
+        "node_agent_inbound_id": "1",
         "auto_seed_demo_data": False,
         "demo_node_auto_register": False,
     }

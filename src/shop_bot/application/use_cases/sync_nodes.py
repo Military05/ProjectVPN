@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from shop_bot.application.ports import NodeGateway, UnitOfWorkFactory
+from shop_bot.domain.entities.node import NodeStatus
+from shop_bot.domain.node_health import NodeHealthSnapshot
 
 
 @dataclass(slots=True)
@@ -56,32 +58,27 @@ class SyncNodeStatus:
                     try:
                         snapshot = await self._snapshot(node=node, credential=credential)
                         completed = self.clock()
-                        health = dict(snapshot.get("health") or {})
-                        capabilities = dict(snapshot.get("capabilities") or {})
-                        status_payload = dict(snapshot.get("status") or {})
-                        metrics = dict(snapshot.get("metrics") or {
-                            "active_clients": status_payload.get("active_clients"),
-                            "max_clients": status_payload.get("max_clients"),
-                            "load": status_payload.get("load", {}),
-                            "traffic": status_payload.get("traffic", {}),
-                        })
+                        capabilities = dict(snapshot.capabilities)
+                        status_payload = dict(snapshot.status_payload)
+                        metrics = snapshot.capacity.as_metrics_payload()
+                        inbounds = [dict(inbound) for inbound in snapshot.inbounds]
                         async with self.uow_factory() as uow:
                             if hasattr(claimed, "lease_token"):
                                 accepted = await uow.nodes.finalize_probe(
                                     node_id=current_id, lease_token=claimed.lease_token,
-                                    health_status=str(status_payload.get("status") or "online").lower(),
+                                    health_status=snapshot.health_status.value,
                                     completed_at=completed, last_seen_at=completed, last_error=None,
                                     capabilities=capabilities, metrics=metrics, status_payload=status_payload,
-                                    inbounds=list(snapshot.get("inbounds") or status_payload.get("inbounds") or []),
-                                    agent_version=str(health.get("agent_version")) if health.get("agent_version") else None,
+                                    inbounds=inbounds,
+                                    agent_version=snapshot.agent_version,
                                 )
                             else:
                                 await uow.nodes.upsert_node_status(
                                     node_id=current_id,
-                                    health_status=str(status_payload.get("status") or "online").lower(),
-                                    agent_version=str(health.get("agent_version")) if health.get("agent_version") else None,
+                                    health_status=snapshot.health_status.value,
+                                    agent_version=snapshot.agent_version,
                                     capabilities=capabilities, metrics=metrics, status_payload=status_payload,
-                                    inbounds=list(status_payload.get("inbounds") or []), last_seen_at=completed,
+                                    inbounds=inbounds, last_seen_at=completed,
                                     last_checked_at=completed,
                                 )
                                 accepted = True
@@ -93,7 +90,8 @@ class SyncNodeStatus:
                         async with self.uow_factory() as uow:
                             if hasattr(claimed, "lease_token"):
                                 await uow.nodes.finalize_probe(
-                                    node_id=current_id, lease_token=claimed.lease_token, health_status="offline",
+                                    node_id=current_id, lease_token=claimed.lease_token,
+                                    health_status=NodeStatus.OFFLINE.value,
                                     completed_at=completed, last_seen_at=None, last_error=str(exc),
                                     capabilities={}, metrics={}, status_payload={}, inbounds=[], agent_version=None,
                                 )
@@ -107,7 +105,7 @@ class SyncNodeStatus:
         await asyncio.gather(*(worker() for _ in range(max(1, self.concurrency))))
         return {"status": "ok", "synced": synced, "offline": offline}
 
-    async def _snapshot(self, *, node: Any, credential: Any) -> dict[str, Any]:
+    async def _snapshot(self, *, node: Any, credential: Any) -> NodeHealthSnapshot:
         if hasattr(self.node_gateway, "get_snapshot"):
             return await self.node_gateway.get_snapshot(node=node, credential=credential)
         health, capabilities, status = await asyncio.gather(
@@ -115,4 +113,6 @@ class SyncNodeStatus:
             self.node_gateway.get_capabilities(node=node, credential=credential),
             self.node_gateway.get_status(node=node, credential=credential),
         )
-        return {"health": health, "capabilities": capabilities, "status": status}
+        return NodeHealthSnapshot.from_payload(
+            {"health": health, "capabilities": capabilities, "status": status}
+        )

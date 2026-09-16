@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from shop_bot.application.job_names import JobName
 from shop_bot.application.ports import JobQueue, UnitOfWorkFactory
 from shop_bot.application.revoke_reason import VpnRevokeReason
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.domain.reconciliation import (
     ReconciliationAnomaly,
     ReconciliationAnomalyKind,
@@ -108,8 +109,8 @@ class ReconcileSubscriptions:
             subscription.expire(now)
             await uow.subscriptions.save_entity(subscription)
             await uow.audit.append(
-                event_name="subscription_ended",
-                aggregate_type="subscription",
+                event_name=AuditEventName.SUBSCRIPTION_ENDED,
+                aggregate_type=AuditAggregateType.SUBSCRIPTION,
                 aggregate_id=subscription_id,
                 payload={"subscription_id": subscription_id},
             )

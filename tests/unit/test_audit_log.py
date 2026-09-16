@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from shop_bot.application.commands.publish_outbox_events import publish_outbox_events
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.infrastructure.persistence.repositories.audit import AuditRepository
 
 
@@ -36,8 +37,8 @@ async def test_audit_repository_exposes_append_only_insert() -> None:
     payload = {"subscription_id": 7}
 
     event_id = await repository.append(
-        event_name="subscription_activated",
-        aggregate_type="subscription",
+        event_name=AuditEventName.SUBSCRIPTION_ACTIVATED,
+        aggregate_type=AuditAggregateType.SUBSCRIPTION,
         aggregate_id=7,
         payload=payload,
         created_at=NOW,

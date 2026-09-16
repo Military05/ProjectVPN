@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from shop_bot.application.ports import JobQueue, UnitOfWorkFactory
 from shop_bot.application.use_cases.activate_subscription import ActivateSubscription
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.domain.entities.payment import (
     PaymentAttempt,
     PaymentEvent,
@@ -115,8 +116,8 @@ class ProcessPayment:
             period = await uow.subscriptions.get_period_by_payment_order_id(int(order.id), for_update=True)
             if period is None:
                 await uow.audit.append(
-                    event_name="refund_entitlement_reconciliation_required",
-                    aggregate_type="payment_order",
+                    event_name=AuditEventName.REFUND_ENTITLEMENT_RECONCILIATION_REQUIRED,
+                    aggregate_type=AuditAggregateType.PAYMENT_ORDER,
                     aggregate_id=int(order.id),
                     payload={"payment_order_id": int(order.id), "refund_event_key": event.event_key},
                 )
@@ -276,8 +277,8 @@ class ProcessPayment:
         activation: SubscriptionActivation,
     ) -> None:
         await uow.audit.append(
-            event_name="subscription_activated",
-            aggregate_type="subscription",
+            event_name=AuditEventName.SUBSCRIPTION_ACTIVATED,
+            aggregate_type=AuditAggregateType.SUBSCRIPTION,
             aggregate_id=activation.subscription.id,
             payload={
                 "subscription_id": activation.subscription.id,
@@ -307,8 +308,8 @@ class ProcessPayment:
         if order.apply_external_status(status, now):
             await uow.payments.save_order_entity(order)
         await uow.audit.append(
-            event_name=f"payment_{status}",
-            aggregate_type="payment_order",
+            event_name=AuditEventName(f"payment_{status}"),
+            aggregate_type=AuditAggregateType.PAYMENT_ORDER,
             aggregate_id=int(order.id),
             payload={"payment_order_id": order.id, "status": str(status)},
         )

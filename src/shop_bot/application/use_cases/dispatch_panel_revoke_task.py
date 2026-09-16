@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from shop_bot.application.job_names import JobName
 from shop_bot.application.ports import JobQueue, PanelGateway, UnitOfWorkFactory
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.domain.entities.panel_task import PanelRevokeTaskStatus
 from shop_bot.domain.entities.vpn import VpnConfigurationStatus, VpnDesiredState
 
@@ -123,8 +124,8 @@ class DispatchPanelRevokeTask:
                 configuration.revoke(now)
                 await uow.vpn.save_entity(configuration)
                 await uow.audit.append(
-                    event_name="vpn_configuration_revoked",
-                    aggregate_type="vpn_configuration",
+                    event_name=AuditEventName.VPN_CONFIGURATION_REVOKED,
+                    aggregate_type=AuditAggregateType.VPN_CONFIGURATION,
                     aggregate_id=task.vpn_configuration_id,
                     payload={"vpn_configuration_id": task.vpn_configuration_id},
                 )

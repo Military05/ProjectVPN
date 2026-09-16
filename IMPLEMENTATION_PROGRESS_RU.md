@@ -52,6 +52,9 @@
 - Удалён глобальный Redis service locator (`get_redis`/`set_redis`): Redis теперь принадлежит DI container; добавлены architecture guards против возврата locator и новых production imports через compatibility `infrastructure/db`.
 - Завершён `CHANGE-10`: создание и повтор заказа вынесены в stateless `OrderFlow`; удалены process-local `_order_intents` и `OrderIntentContext`; после перезапуска бота callback повторно получает актуальный enabled-тариф из backend и использует прежний idempotency key `tg-ui2:{telegram_id}:{tariff_id}:{intent_id}`.
 - `Settings.bot_dedup_ttl_seconds` теперь передаётся в Telegram controller и используется для всех Telegram dedup keys вместо hardcoded TTL; неположительное значение отклоняется конфигурацией.
+- Полностью завершён targeted scope `CHANGE-16`. Node health boundary теперь использует frozen typed dataclasses `NodeHealthSnapshot`/`NodeCapacitySnapshot`: wire payload преобразуется в infrastructure adapter, а application health sync получает типизированные status, version и capacity вместо обхода `dict[str, Any]`. Неизвестный health status нормализуется в fail-closed `UNKNOWN`, некорректные capacity values отклоняются.
+- Новые audit paths используют `AuditEventName` и `AuditAggregateType` на application/repository boundary; concrete repository сохраняет прежние строковые DB-значения. Architecture test запрещает возврат строковых литералов во все вызовы `uow.audit.append()`.
+- Финальный audit подтвердил остальные решения `CHANGE-16`: node selection уже использует `NodeSelectionCandidate`, state/reconciliation paths — доменные enums, Settings validator разделён, Redis locator удалён, compatibility DB facade и `get_engine/set_engine` намеренно сохранены. Глобальный refactor persistence mappings, `AdminOperations`, refund aggregate и compatibility facade не выполнялся согласно спецификации.
 
 ## Проверено
 
@@ -59,6 +62,8 @@
 - Настоящий concurrent final-slot test на PostgreSQL 16: GitHub Actions [`35031255654`](https://github.com/Military05/ProjectVPN/actions/runs/35031255654) — `1 passed`. Оба provisioner получили один и тот же pre-lock snapshot свободного последнего slot; после сериализации по node-row lock итогом стали один `queued`, один `waiting_for_node_capacity` и ровно по одной configuration, NodeTask и audit-записи.
 - Контрольный полный прогон после `CHANGE-03` с production-valid `NODE_AGENT_INBOUND_ID=1`: `323 passed, 8 skipped`. По сравнению с предыдущим baseline добавлены 23 успешных сценария; новый восьмой skip — только real-PostgreSQL final-slot test.
 - Сырой полный прогон после `CHANGE-03`: `306 passed, 17 failed, 8 skipped`. Перечень 17 унаследованных XUI/production-settings failures не изменился; новых падений нет.
+- Целевой набор `CHANGE-16`: `18 passed`. Проверены typed/frozen DTO и wire conversion, fail-closed unknown status, capacity validation, health-sync consumption, enum-only audit boundary, строковая DB-совместимость, Redis locator guard и запрет production imports через compatibility DB facade.
+- Контрольный полный прогон после `CHANGE-16` с `NODE_AGENT_INBOUND_ID=1`: `328 passed, 8 skipped`. Сырой прогон: `311 passed, 17 failed, 8 skipped`; список 17 унаследованных XUI/production-settings fixture failures не изменился, новых падений нет.
 - `python -m compileall -q src tests alembic` — успешно.
 - Целевой набор `CHANGE-07`: `23 passed, 1 skipped` локально. Проверены bounded/two-phase use case, conditional fencing, client/route HMAC contract, все состояния Node Agent journal, retirement/claim race, отсутствие TTL-механизма и регистрация cron; единственный skip — отдельный real-PostgreSQL тест без локального сервера.
 - Настоящий rolling migration smoke на PostgreSQL `16.14`: GitHub Actions [`34984436733`](https://github.com/Military05/ProjectVPN/actions/runs/34984436733) — `1 passed`. На чистой БД выполнена вся цепочка до `0009`, затем `0009 → 0010`; подтверждены catch-up старых outbox-строк, mirror INSERT от старой replica, сохранение `outbox_events`, оба DESC-индекса, запрет UPDATE/DELETE с SQLSTATE `55000` и повторный `upgrade head` без потери данных.
@@ -84,7 +89,6 @@
 ## Осталось для следующего этапа
 
 - Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
-- Выполнить отдельный финальный audit оставшейся targeted-части `CHANGE-16`, не расширяя его до глобального refactor. Уже сделанные Redis locator removal, compatibility-import guard и stateless order workflow повторять не нужно.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
 - Выполнить оставшиеся integration tests на настоящих PostgreSQL/Redis, не покрытые отдельным migration-0010 workflow.
 - Исправить 17 унаследованных XUI/production-settings падений полного набора перед production acceptance gate.
@@ -93,6 +97,6 @@
 
 ## Что делать в следующем промпте
 
-Следующий отдельный этап разработки — выполнить только оставшуюся targeted-часть `CHANGE-16`: провести финальный architecture audit по её точному scope и закрыть только реально незавершённые пункты. Не повторять завершённые `CHANGE-03`, `CHANGE-04`, `CHANGE-05`, `CHANGE-06`, `CHANGE-07` и уже выполненную часть `CHANGE-16`; не делать глобальный refactor `Mapping[str, Any]`, `AdminOperations`, refund aggregate или compatibility DB facade.
+Следующий отдельный этап разработки — исправить только 17 устаревших XUI/production-settings test fixtures: в сценариях, которые намеренно включают XUI, явно передать допустимый числовой `NODE_AGENT_INBOUND_ID`, не ослабляя production validator и не меняя runtime/business behavior. После этого сырой полный `pytest` должен совпасть с контрольным прогоном без необходимости задавать внешний env override.
 
-После следующей правки снова выполнить целевые architecture tests, `compileall` и полный `pytest`, сравнив результат с текущим raw baseline `306 passed, 17 failed, 8 skipped` и контрольным baseline `323 passed, 8 skipped` при `NODE_AGENT_INBOUND_ID=1`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md`; rolling-upgrade smoke миграции `20260913_0010` уже успешно подтверждён на PostgreSQL 16.14.
+После следующей правки выполнить полный `pytest` без env override и сравнить с текущим контрольным baseline `328 passed, 8 skipped`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и шесть PostgreSQL-сценариев `CHANGE-12` по `CHANGE12_CHECKLIST_RU.md`; rolling-upgrade smoke миграции `20260913_0010` уже успешно подтверждён на PostgreSQL 16.14.

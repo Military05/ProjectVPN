@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import Any, Protocol, Self
 from uuid import UUID
 
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.domain.entities import (
     Node,
     NodeTask,
@@ -455,8 +456,8 @@ class AuditRepository(Protocol):
     async def append(
         self,
         *,
-        event_name: str,
-        aggregate_type: str,
+        event_name: AuditEventName,
+        aggregate_type: AuditAggregateType,
         aggregate_id: int,
         payload: Mapping[str, Any] | None = None,
         created_at: datetime | None = None,

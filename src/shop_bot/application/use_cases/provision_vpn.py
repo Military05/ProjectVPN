@@ -9,6 +9,7 @@ from uuid import uuid4
 from shop_bot.application.job_names import JobName
 from shop_bot.application.ports import JobQueue, UnitOfWorkFactory
 from shop_bot.application.revoke_reason import VpnRevokeReason
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.panel_task import PanelProvisionTask, PanelProvisionTaskStatus
 from shop_bot.domain.entities.subscription import Subscription
@@ -322,8 +323,8 @@ class ProvisionVpn:
         configuration.activate(remote_client_ref)
         await uow.vpn.save_entity(configuration)
         await uow.audit.append(
-            event_name="vpn_configuration_activated",
-            aggregate_type="vpn_configuration",
+            event_name=AuditEventName.VPN_CONFIGURATION_ACTIVATED,
+            aggregate_type=AuditAggregateType.VPN_CONFIGURATION,
             aggregate_id=configuration.id,
             payload={
                 "vpn_configuration_id": configuration.id,
@@ -372,8 +373,8 @@ class ProvisionVpn:
         if configuration.id is None:
             raise RuntimeError("VPN configuration was not persisted")
         await uow.audit.append(
-            event_name="vpn_configuration_created",
-            aggregate_type="vpn_configuration",
+            event_name=AuditEventName.VPN_CONFIGURATION_CREATED,
+            aggregate_type=AuditAggregateType.VPN_CONFIGURATION,
             aggregate_id=configuration.id,
             payload={"vpn_configuration_id": configuration.id, "subscription_id": subscription_id},
         )

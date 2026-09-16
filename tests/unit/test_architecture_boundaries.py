@@ -150,3 +150,39 @@ def test_redis_client_has_no_global_service_locator() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     assert function_names.isdisjoint({"get_redis", "set_redis"})
+
+
+def test_audit_writes_use_domain_enums() -> None:
+    violations: list[str] = []
+    for path in (SRC / "application" / "use_cases").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            owner = node.func.value
+            if (
+                node.func.attr != "append"
+                or not isinstance(owner, ast.Attribute)
+                or owner.attr != "audit"
+            ):
+                continue
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            event_name = keywords.get("event_name")
+            aggregate_type = keywords.get("aggregate_type")
+            event_is_enum = (
+                isinstance(event_name, ast.Attribute)
+                and isinstance(event_name.value, ast.Name)
+                and event_name.value.id == "AuditEventName"
+            ) or (
+                isinstance(event_name, ast.Call)
+                and isinstance(event_name.func, ast.Name)
+                and event_name.func.id == "AuditEventName"
+            )
+            aggregate_is_enum = (
+                isinstance(aggregate_type, ast.Attribute)
+                and isinstance(aggregate_type.value, ast.Name)
+                and aggregate_type.value.id == "AuditAggregateType"
+            )
+            if not event_is_enum or not aggregate_is_enum:
+                violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert violations == []

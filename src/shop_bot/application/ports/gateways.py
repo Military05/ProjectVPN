@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from shop_bot.application.job_names import JobName
+from shop_bot.domain.node_health import NodeHealthSnapshot
 from shop_bot.domain.payments.models import NormalizedWebhookEvent, PaymentIntent
 
 
@@ -33,6 +34,13 @@ class PanelGateway(Protocol):
 
 
 class NodeGateway(Protocol):
+    async def get_snapshot(
+        self,
+        *,
+        node: Mapping[str, Any],
+        credential: Mapping[str, Any],
+    ) -> NodeHealthSnapshot: ...
+
     async def retire_journal_record(
         self,
         *,

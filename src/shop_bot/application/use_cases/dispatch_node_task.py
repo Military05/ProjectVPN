@@ -8,6 +8,7 @@ from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from shop_bot.application.ports import JobQueue, NodeGateway, UnitOfWorkFactory
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.vpn import VpnConfigurationStatus, VpnDesiredState
 from shop_bot.domain.repositories.interfaces import UnitOfWork
@@ -373,8 +374,8 @@ class DispatchNodeTask:
             configuration.activate(task.remote_client_ref)
             await uow.vpn.save_entity(configuration)
             await uow.audit.append(
-                event_name="vpn_configuration_activated",
-                aggregate_type="vpn_configuration",
+                event_name=AuditEventName.VPN_CONFIGURATION_ACTIVATED,
+                aggregate_type=AuditAggregateType.VPN_CONFIGURATION,
                 aggregate_id=task.vpn_configuration_id,
                 payload={
                     "vpn_configuration_id": task.vpn_configuration_id,
@@ -420,8 +421,8 @@ class DispatchNodeTask:
             configuration.revoke(completed_at)
             await uow.vpn.save_entity(configuration)
             await uow.audit.append(
-                event_name="vpn_configuration_revoked",
-                aggregate_type="vpn_configuration",
+                event_name=AuditEventName.VPN_CONFIGURATION_REVOKED,
+                aggregate_type=AuditAggregateType.VPN_CONFIGURATION,
                 aggregate_id=task.vpn_configuration_id,
                 payload={"vpn_configuration_id": task.vpn_configuration_id},
             )

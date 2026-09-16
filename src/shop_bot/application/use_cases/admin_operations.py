@@ -10,6 +10,7 @@ from shop_bot.application.revoke_reason import VpnRevokeReason
 from shop_bot.application.use_cases.sync_subscriptions import ReconcileSubscriptions
 from shop_bot.application.use_cases.activate_subscription import ActivateSubscription
 from shop_bot.core.exceptions import NotFoundError
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 
 
 @dataclass(slots=True)
@@ -86,8 +87,8 @@ class AdminOperations:
                 raise RuntimeError("Subscription activation was not persisted")
             subscription_id = int(activation.subscription.id)
             await uow.audit.append(
-                event_name="subscription_activated",
-                aggregate_type="subscription",
+                event_name=AuditEventName.SUBSCRIPTION_ACTIVATED,
+                aggregate_type=AuditAggregateType.SUBSCRIPTION,
                 aggregate_id=subscription_id,
                 payload={
                     "subscription_id": subscription_id,
@@ -97,8 +98,8 @@ class AdminOperations:
                 },
             )
             await uow.audit.append(
-                event_name="payment_manually_settled",
-                aggregate_type="payment_order",
+                event_name=AuditEventName.PAYMENT_MANUALLY_SETTLED,
+                aggregate_type=AuditAggregateType.PAYMENT_ORDER,
                 aggregate_id=int(order.id),
                 payload={"payment_order_id": int(order.id), "subscription_id": subscription_id},
             )

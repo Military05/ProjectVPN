@@ -9,6 +9,7 @@ from uuid import uuid4
 from shop_bot.application.job_names import JobName
 from shop_bot.application.ports import JobQueue, UnitOfWorkFactory
 from shop_bot.application.revoke_reason import VpnRevokeReason
+from shop_bot.domain.audit import AuditAggregateType, AuditEventName
 from shop_bot.domain.entities.node import NodeTask, NodeTaskOperation, NodeTaskStatus
 from shop_bot.domain.entities.panel_task import PanelRevokeTask, PanelRevokeTaskStatus
 from shop_bot.domain.entities.vpn import (
@@ -260,8 +261,8 @@ class RevokeVpn:
         configuration.revoke(now)
         await uow.vpn.save_entity(configuration)
         await uow.audit.append(
-            event_name="vpn_configuration_revoked",
-            aggregate_type="vpn_configuration",
+            event_name=AuditEventName.VPN_CONFIGURATION_REVOKED,
+            aggregate_type=AuditAggregateType.VPN_CONFIGURATION,
             aggregate_id=configuration.id,
             payload={"vpn_configuration_id": configuration.id},
         )

@@ -8,8 +8,19 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 
+def _migration_root() -> Path:
+    candidates = (Path.cwd().resolve(), *Path(__file__).resolve().parents)
+    for candidate in candidates:
+        if (candidate / "alembic.ini").is_file() and (candidate / "alembic").is_dir():
+            return candidate
+    raise RuntimeError(
+        "Alembic files are unavailable; run the service from the project root "
+        "or include alembic.ini and the alembic directory in the runtime image"
+    )
+
+
 def _heads() -> set[str]:
-    root = Path(__file__).resolve().parents[5]
+    root = _migration_root()
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "alembic"))
     return set(ScriptDirectory.from_config(config).get_heads())

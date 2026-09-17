@@ -1,0 +1,50 @@
+name: CHANGE-12 PostgreSQL admin creation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - src/shop_bot/application/use_cases/admin_operations.py
+      - src/shop_bot/application/use_cases/node_administration.py
+      - src/shop_bot/apps/api/routes/admin.py
+      - src/shop_bot/apps/api/routes/nodes.py
+      - src/shop_bot/infrastructure/persistence/repositories/admin.py
+      - src/shop_bot/infrastructure/persistence/repositories/nodes.py
+      - src/shop_bot/infrastructure/persistence/repositories/servers.py
+      - src/shop_bot/infrastructure/persistence/sqlalchemy/tables.py
+      - tests/integration/test_admin_creation_postgresql.py
+      - .github/workflows/change12-postgresql.yml
+
+jobs:
+  concurrent-admin-creation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: projectvpn_change12_test
+          POSTGRES_USER: shopbot
+          POSTGRES_PASSWORD: integration-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shopbot -d projectvpn_change12_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PROJECTVPN_CHANGE12_TEST_DATABASE_URL: postgresql+asyncpg://shopbot:integration-only-password@127.0.0.1:5432/projectvpn_change12_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install locked development dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Run CHANGE-12 PostgreSQL acceptance
+        run: python -m pytest -q tests/integration/test_admin_creation_postgresql.py

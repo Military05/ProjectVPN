@@ -38,6 +38,7 @@
 - Реализация `CHANGE-12` доведена на уровне кода: создание tariff/server/node/endpoint использует DB-authoritative `INSERT ... ON CONFLICT DO NOTHING RETURNING`; для node и endpoint заданы точные conflict targets, а server намеренно учитывает оба независимых уникальных ключа — имя и host.
 - Пустой `RETURNING` преобразуется в domain `ConflictError` и HTTP 409; проигравший node INSERT не доходит до создания credential. Ошибки дочерней записи остаются внутри общей UoW-транзакции и откатывают родителя; `CHECK`/`FOREIGN KEY` не перехватываются как conflict.
 - Добавлены 10 быстрых regression-тестов SQL/API/use-case контракта и 6 настоящих PostgreSQL integration-сценариев: параллельные tariff/server/node/endpoint запросы, один credential победителя, `NULLS NOT DISTINCT`, rollback и немаскированные ограничения.
+- `CHANGE-12` полностью подтверждён отдельным GitHub Actions workflow на PostgreSQL 16.14: все 6 PostgreSQL integration-сценариев прошли без skipped; production-код и семантика тестов для acceptance не менялись.
 - Завершён `CHANGE-08` на уровне кода и чистой Python-установки: добавлены SHA-256 hash-pinned `requirements/runtime.lock`, `requirements/dev.lock` и `requirements/build.lock` для Python 3.12; dev-lock является точным надмножеством runtime-lock, а build-lock совпадает с `build-system.requires`.
 - Runtime зафиксирован на совместимой паре FastAPI `0.136.3` и `prometheus-fastapi-instrumentator` `7.1.0`; диапазон FastAPI ограничен `<0.137.0`, потому что ветка `0.137+` вводит lazy `_IncludedRouter`, который instrumentator `7.1.0` не умеет обрабатывать.
 - Dockerfile устанавливает только `build.lock` и `runtime.lock` с `--require-hashes`, затем проект с `--no-deps --no-build-isolation` и выполняет `pip check`; обновление pip и разрешение project dependency ranges во время image build удалены, digest Python 3.12 base image сохранён.
@@ -73,7 +74,7 @@
 - Целевой набор `CHANGE-05`: `51 passed` — maintenance lease/owner fencing, точный concurrent result, bounded keyset batches, шесть anomaly actions, enqueue failure, lease loss, отсутствие full-scan cron, compatibility wrapper, repository SQL contract и локальное завершение `SUCCEEDED` Node/panel task без replay.
 - Целевой набор `CHANGE-04`: `70 passed` — domain transitions, Node/panel task states, terminal local recovery, cleanup-before-replacement, original endpoint/client preservation, physical-index/repository conflict contracts, same-key central retry и Node Agent ambiguous-operation recovery.
 - Целевые regression-тесты `CHANGE-12`: `10 passed`; совместно с тестами `CHANGE-11`: `28 passed`.
-- PostgreSQL-набор `CHANGE-12` корректно собирается, но в текущей среде дал `6 skipped`, поскольку здесь отсутствуют Docker и PostgreSQL. До запуска этих шести тестов на настоящем PostgreSQL пункт считается реализованным, но не полностью подтверждённым.
+- Настоящий PostgreSQL-набор `CHANGE-12`: GitHub Actions [`35252712448`](https://github.com/Military05/ProjectVPN/actions/runs/35252712448) на PostgreSQL `16.14` — `6 passed in 0.93s`, без `skipped`.
 - Целевые regression-тесты `CHANGE-11`: `18 passed` (HTTP defaults/bounds/body, API query contract, probe row/headers, application forwarding, repository window/stable ordering и UI contract).
 - Regression-тесты `CHANGE-08`: `5 passed` (точные pins/hashes всех lock-файлов, runtime ⊂ dev, build metadata, Dockerfile contract и живой FastAPI/Prometheus HTTP smoke).
 - `node --check` для admin UI JavaScript — успешно; `pip check` — зависимости согласованы.
@@ -90,7 +91,6 @@
 
 ## Осталось для следующего этапа
 
-- Запустить 6 тестов из `tests/integration/test_admin_creation_postgresql.py` на настоящем PostgreSQL 15+ по `CHANGE12_CHECKLIST_RU.md`. Ожидаемый итог — `6 passed`, без `skipped`; это последний acceptance-шаг для полного подтверждения `CHANGE-12`.
 - Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
 - Выполнить оставшиеся integration tests на настоящих PostgreSQL/Redis, не покрытые отдельным migration-0010 workflow.
 
@@ -98,6 +98,6 @@
 
 ## Что делать в следующем промпте
 
-Следующий отдельный этап — полностью подтвердить только `CHANGE-12` на настоящем PostgreSQL 16: добавить отдельный минимальный GitHub Actions workflow для `tests/integration/test_admin_creation_postgresql.py`, не меняя production code и семантику тестов, выполнить его и получить `6 passed` без `skipped`.
+`CHANGE-12` полностью подтверждён и повторять его не нужно. Следующий отдельный этап — выполнить только clean Docker acceptance по уже зафиксированным lock-файлам: `docker compose build --no-cache`, запуск `migrate`, API, worker, bot и node-agent, проверка schema/readiness и ручной smoke административной панели по `CHANGE12_CHECKLIST_RU.md`. Production-логику менять только при обнаружении отдельной воспроизводимой ошибки.
 
-После успешного workflow записать ссылку на run в этот отчёт и сохранить результат в `main`. Отдельно на ноутбуке всё ещё нужно выполнить `docker compose build --no-cache` и ручной smoke административной панели; rolling-upgrade smoke миграции `20260913_0010` уже успешно подтверждён на PostgreSQL 16.14.
+Rolling-upgrade smoke миграции `20260913_0010` и PostgreSQL acceptance `CHANGE-12` уже успешно подтверждены на PostgreSQL 16.14.

@@ -150,6 +150,10 @@ Endpoints:
 - node agent: `http://localhost:8090`
 - Prometheus: `http://localhost:9090`
 
+Полная русскоязычная инструкция по подготовке `.env`, чистой сборке, запуску,
+проверке административной панели, Telegram-бота, PostgreSQL/Redis тестов,
+обновлению и резервному копированию: [`LOCAL_RUNBOOK_RU.md`](LOCAL_RUNBOOK_RU.md).
+
 ## Manual run
 
 Requires Python 3.12+, PostgreSQL and Redis.

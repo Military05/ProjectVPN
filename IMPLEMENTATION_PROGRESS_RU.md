@@ -1,6 +1,6 @@
-# Отчёт о промежуточной реализации
+# Итоговый отчёт о реализации и acceptance
 
-В ветке `main` репозитория `ProjectVPN` ведётся безопасная поэтапная реализация спецификации `Решения проблем`.
+В ветке `main` репозитория `ProjectVPN` завершена поэтапная реализация спецификации `Решения проблем` и автоматизированный acceptance на настоящих PostgreSQL 16, Redis и чистом Docker Compose стенде.
 
 ## Готово
 
@@ -57,9 +57,15 @@
 - Новые audit paths используют `AuditEventName` и `AuditAggregateType` на application/repository boundary; concrete repository сохраняет прежние строковые DB-значения. Architecture test запрещает возврат строковых литералов во все вызовы `uow.audit.append()`.
 - Финальный audit подтвердил остальные решения `CHANGE-16`: node selection уже использует `NodeSelectionCandidate`, state/reconciliation paths — доменные enums, Settings validator разделён, Redis locator удалён, compatibility DB facade и `get_engine/set_engine` намеренно сохранены. Глобальный refactor persistence mappings, `AdminOperations`, refund aggregate и compatibility facade не выполнялся согласно спецификации.
 - Устранены 17 унаследованных ложных падений XUI/production-settings тестов: три fixtures, которые намеренно включают XUI, теперь явно задают допустимый `node_agent_inbound_id="1"`. Production validator и runtime/business code не изменялись.
+- Добавлен финальный GitHub Actions gate `.github/workflows/final-acceptance.yml`: полный pytest использует настоящие PostgreSQL 16 и Redis и запрещает любые failures/errors/skips; второй job выполняет `docker compose build --no-cache`, миграцию и smoke всего локального стека.
+- Clean Docker acceptance выявил и устранил реальный deployment-дефект: установленный wheel искал Alembic относительно `site-packages`. Schema assertion теперь находит `alembic.ini` и каталог миграций как из source checkout, так и из runtime working directory контейнера; добавлен regression-тест.
+- Добавлен единый пользовательский runbook `LOCAL_RUNBOOK_RU.md`: подготовка `.env`, сборка, запуск, health/schema checks, административная панель, bot, полный real-service pytest, обновление, backup и production checklist.
 
 ## Проверено
 
+- Финальный real-service run: GitHub Actions [`35254302019`](https://github.com/Military05/ProjectVPN/actions/runs/35254302019) — `337 passed`, `0 failed`, `0 errors`, `0 skipped` на PostgreSQL 16 и Redis.
+- В том же run успешно выполнены чистая `docker compose build --no-cache`, migration head `20260913_0010`, schema-aware `/health/ready`, работа API, worker, node-agent, PostgreSQL, Redis и Prometheus, admin UI/API/pagination smoke и bot composition без обращения к внешнему Telegram API.
+- После исправления runtime Alembic path локальный набор без внешних сервисов: `329 passed, 8 skipped`; все восемь skips затем включены и успешно пройдены в real-service run.
 - Целевой набор `CHANGE-03`: `52 passed, 1 skipped`. Проверены fail-closed availability, формула effective capacity, deterministic weighted tickets, ONLINE-before-DEGRADED, endpoint deduplication, двухstatementный `FOR UPDATE` contract, post-lock revalidation без side effects и dispatch preflight для provision/revoke. Единственный skip — новый concurrent final-slot test без локального PostgreSQL.
 - Настоящий concurrent final-slot test на PostgreSQL 16: GitHub Actions [`35031255654`](https://github.com/Military05/ProjectVPN/actions/runs/35031255654) — `1 passed`. Оба provisioner получили один и тот же pre-lock snapshot свободного последнего slot; после сериализации по node-row lock итогом стали один `queued`, один `waiting_for_node_capacity` и ровно по одной configuration, NodeTask и audit-записи.
 - Контрольный полный прогон после `CHANGE-03` с production-valid `NODE_AGENT_INBOUND_ID=1`: `323 passed, 8 skipped`. По сравнению с предыдущим baseline добавлены 23 успешных сценария; новый восьмой skip — только real-PostgreSQL final-slot test.
@@ -86,18 +92,14 @@
 - Полный `pytest -q` после `CHANGE-07`: `283 passed, 17 failed, 7 skipped`. Новых падений нет; два старых route-snapshot падения устранены актуализацией Node Agent contract. Оставшиеся 17 относятся к прежним XUI/production-settings тестовым fixtures, которые включают XUI с дефолтным строковым inbound `main-vless`, а не к journal retirement.
 - Контрольный полный прогон с production-valid `NODE_AGENT_INBOUND_ID=1`: `300 passed, 7 skipped`. Семь skips — шесть PostgreSQL-сценариев `CHANGE-12` и локальный дубль real-PostgreSQL проверки `0010`; последняя отдельно успешно выполнена в GitHub Actions.
 - `pip check`, `git diff --check`, `alembic heads` (`20260913_0010`), `compileall`, YAML parse workflow и `node --check` после `CHANGE-07` — успешно.
-- В текущей среде нет Docker CLI, поэтому реальный `docker compose build --no-cache` здесь не запускался; Dockerfile contract проверен автоматическим тестом, но clean image acceptance нужно выполнить на ноутбуке.
-- `docker-compose.yml` разбирается YAML-парсером; присутствуют `migrate`, healthcheck API и локальный bind Prometheus.
+- `docker-compose.yml` разбирается YAML-парсером; `migrate`, healthcheck API и локальный bind Prometheus подтверждены реальным запуском, а не только статической проверкой.
 
-## Осталось для следующего этапа
+## Итоговый статус
 
-- Выполнить `docker compose build --no-cache` по уже зафиксированным lock-файлам и ручной smoke административной панели на машине с Docker.
-- Выполнить оставшиеся integration tests на настоящих PostgreSQL/Redis, не покрытые отдельным migration-0010 workflow.
+Обязательных доработок или непроверенных автоматизированных тестов по текущему списку CHANGE больше нет. Ветка `main` проходит полный кодовый и Docker acceptance gate.
 
-Текущая ветка `main` является промежуточным checkpoint для продолжения работы, а не заявлением о полном прохождении production acceptance gate.
+Перед реальным production-деплоем остаются только environment-specific действия, которые невозможно выполнить без секретов и инфраструктуры владельца: задать настоящие Telegram/payment/XUI credentials, HTTPS/domain, backup/monitoring и выполнить staging smoke реального платежа, выдачи и отзыва VPN. Они перечислены в `LOCAL_RUNBOOK_RU.md`.
 
 ## Что делать в следующем промпте
 
-`CHANGE-12` полностью подтверждён и повторять его не нужно. Следующий отдельный этап — выполнить только clean Docker acceptance по уже зафиксированным lock-файлам: `docker compose build --no-cache`, запуск `migrate`, API, worker, bot и node-agent, проверка schema/readiness и ручной smoke административной панели по `CHANGE12_CHECKLIST_RU.md`. Production-логику менять только при обнаружении отдельной воспроизводимой ошибки.
-
-Rolling-upgrade smoke миграции `20260913_0010` и PostgreSQL acceptance `CHANGE-12` уже успешно подтверждены на PostgreSQL 16.14.
+Повторять завершённые CHANGE и acceptance не нужно. Следующий осмысленный этап — отдельный staging/production rollout с реальными секретами и внешними системами по разделу «Что изменить перед production» в `LOCAL_RUNBOOK_RU.md`. Любое изменение production-логики делать только для отдельной воспроизводимой ошибки, обнаруженной этим rollout.
